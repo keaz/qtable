@@ -40,7 +40,7 @@ const DROP: &str = "DROP";
 ///   value: DataType::String("test".to_string()),
 /// }]);
 /// ```
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub enum DataObject {
     String(String),
     Number(Number),
@@ -61,7 +61,7 @@ pub enum DataObject {
 ///     value: DataType::String("test".to_string()),
 /// };
 /// ```
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Data {
     pub key: String,
     pub value: DataObject,
@@ -166,18 +166,12 @@ pub struct Query {
     pub filter: Condition,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct InsertData {
     pub data_object_id: String,
     pub table: String,
     pub data: DataObject,
-}
-
-#[derive(Debug)]
-pub struct UpdateData {
-    pub db: String,
-    pub table: String,
-    pub data: DataObject,
+    pub active: bool,
 }
 
 /// Command is an enum that represents a command
@@ -187,7 +181,7 @@ pub enum Command {
     Select(Query),
     /// Insert is a variant that represents an insert command
     Insert(InsertData),
-    Update(UpdateData),
+    Update(InsertData),
     Delete(DeleteData),
     Create,
     Define(String, HashMap<String, Definition>),
@@ -417,10 +411,11 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
 
     match parse_json(json_str, table_name) {
         Ok((_id, table, data)) => {
-            let update_data = UpdateData {
-                db: "".to_string(),
+            let update_data = InsertData {
+                data_object_id: "".to_string(),
                 table: table.to_string(),
                 data,
+                active: true,
             };
             Ok(Command::Update(update_data))
         }
@@ -566,6 +561,7 @@ fn parse_insert_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         data_object_id: db.to_string(),
         table: table.to_string(),
         data,
+        active: true,
     };
     Ok(Command::Insert(insert_data))
 }

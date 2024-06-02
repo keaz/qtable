@@ -7,8 +7,8 @@ use tokio::{
 };
 
 use crate::{
-    index::{Index, ObjectId},
-    parser::{Condition, InsertData, UpdateData, WildCardOperations},
+    index::{Index, IndexId},
+    parser::{Condition, InsertData, WildCardOperations},
 };
 
 pub struct NoSqlDataObject {
@@ -25,17 +25,19 @@ pub enum RangeOp {
 }
 #[derive(Debug)]
 pub enum SerializeError {
-    SerializeError,
-    DeserializeError,
+    Serialize,
+    Deserialize,
+    Update(String),
+    Insert(String),
 }
 
 impl NoSqlDataObject {
-    pub fn add_to_index(&mut self, attribute: &str, value: &str, object_id: &ObjectId) {
+    pub fn add_to_index(&mut self, attribute: &str, value: &str, object_id: &IndexId) {
         if let Some(index) = self.index.get_mut(attribute) {
             index.add_to_index(value, object_id);
         }
     }
-    pub fn query(&self, condition: &Condition) -> Vec<&ObjectId> {
+    pub fn query(&self, condition: &Condition) -> Vec<&IndexId> {
         match condition {
             Condition::WildCard(op) => self.query_wildcard(op),
             Condition::Equal(attr, value) => self.query_equal(attr, value),
@@ -65,7 +67,7 @@ impl NoSqlDataObject {
         }
     }
 
-    fn query_wildcard(&self, op: &WildCardOperations) -> Vec<&ObjectId> {
+    fn query_wildcard(&self, op: &WildCardOperations) -> Vec<&IndexId> {
         match op {
             WildCardOperations::StartsWith(attr, prefix) => self.query_prefix(attr, prefix),
             WildCardOperations::EndsWith(attr, suffix) => self.query_suffix(attr, suffix),
@@ -73,35 +75,35 @@ impl NoSqlDataObject {
         }
     }
 
-    fn query_equal(&self, attr: &str, value: &str) -> Vec<&ObjectId> {
+    fn query_equal(&self, attr: &str, value: &str) -> Vec<&IndexId> {
         if let Some(index) = self.index.get(attr) {
             return index.query_equal(value);
         }
         vec![]
     }
 
-    fn query_range(&self, attr: &str, value: &str, op: RangeOp) -> Vec<&ObjectId> {
+    fn query_range(&self, attr: &str, value: &str, op: RangeOp) -> Vec<&IndexId> {
         if let Some(index) = self.index.get(attr) {
             return index.query_range(value, op);
         }
         vec![]
     }
 
-    fn query_prefix(&self, attr: &str, prefix: &str) -> Vec<&ObjectId> {
+    fn query_prefix(&self, attr: &str, prefix: &str) -> Vec<&IndexId> {
         if let Some(index) = self.index.get(attr) {
             return index.query_prefix(prefix);
         }
         vec![]
     }
 
-    fn query_suffix(&self, attr: &str, suffix: &str) -> Vec<&ObjectId> {
+    fn query_suffix(&self, attr: &str, suffix: &str) -> Vec<&IndexId> {
         if let Some(index) = self.index.get(attr) {
             return index.query_suffix(suffix);
         }
         vec![]
     }
 
-    fn query_contains(&self, attr: &str, substring: &str) -> Vec<&ObjectId> {
+    fn query_contains(&self, attr: &str, substring: &str) -> Vec<&IndexId> {
         if let Some(index) = self.index.get(attr) {
             return index.query_contains(substring);
         }
@@ -110,8 +112,8 @@ impl NoSqlDataObject {
 }
 
 impl NoSqlDataObject {
-    pub async fn insert(&mut self, insert_data: InsertData) -> Result<ObjectId, SerializeError> {
-        let serialized = bincode::serialize(&insert_data.data);
+    pub async fn insert(&mut self, insert_data: InsertData) -> Result<IndexId, SerializeError> {
+        let serialized = bincode::serialize(&insert_data);
         match serialized {
             Ok(data) => {
                 let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
@@ -119,31 +121,32 @@ impl NoSqlDataObject {
                                                                                     // should be available at this point
                 match file {
                     Ok(file) => {
-                        let data = format!("{}\n", String::from_utf8(data).unwrap());
                         let data_len = data.len();
-                        let position = self.seek_and_write(file, data.as_bytes().to_vec()).await?;
-                        Ok(ObjectId {
+                        let (position, _file) = self.write_to_end(file, data).await?;
+                        Ok(IndexId {
                             position,
                             length: data_len,
                         })
                     }
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::SerializeError)
+                        Err(SerializeError::Insert(
+                            "Error opening data file".to_string(),
+                        ))
                     }
                 }
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::SerializeError)
+                Err(SerializeError::Serialize)
             }
         }
     }
 
     pub async fn get_data(
         &self,
-        data_objects: Vec<&ObjectId>,
-    ) -> Result<Vec<Vec<u8>>, SerializeError> {
+        data_objects: Vec<&IndexId>,
+    ) -> Result<Vec<InsertData>, SerializeError> {
         let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
         let file = File::open(data_file_name).await;
         let mut data = vec![];
@@ -157,23 +160,112 @@ impl NoSqlDataObject {
                         .unwrap();
                     let mut data_chunk = vec![0; data_object.length];
                     file.read_exact(&mut data_chunk).await.unwrap();
-                    data.push(data_chunk);
+                    let data_object = bincode::deserialize::<InsertData>(&data_chunk);
+                    match data_object {
+                        Ok(data_object) => data.push(data_object),
+                        Err(e) => {
+                            error!("Error: {:?}", e);
+                            return Err(SerializeError::Deserialize);
+                        }
+                    }
                 }
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                return Err(SerializeError::SerializeError);
+                return Err(SerializeError::Serialize);
             }
         }
         Ok(data)
     }
 
-    // TODO Update function
-    pub async fn update(&self, current_posision: u64, current_len: usize, update_data: UpdateData) {
+    async fn get_data_object(&self, data_object: &IndexId) -> Result<InsertData, SerializeError> {
+        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+        let file = File::open(data_file_name).await;
+        match file {
+            Ok(mut file) => {
+                file.seek(SeekFrom::Start(data_object.position))
+                    .await
+                    .unwrap();
+                let mut data = vec![0; data_object.length];
+                file.read_exact(&mut data).await.unwrap();
+                let data_object = bincode::deserialize::<InsertData>(&data);
+                match data_object {
+                    Ok(data_object) => Ok(data_object),
+                    Err(e) => {
+                        error!("Error: {:?}", e);
+                        Err(SerializeError::Deserialize)
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Error: {:?}", e);
+                Err(SerializeError::Serialize)
+            }
+        }
     }
 
-    async fn seek_and_write(&self, mut file: File, data: Vec<u8>) -> Result<u64, SerializeError> {
+    ///
+    /// Update the data object at the given position with the new data
+    /// Inactivates the old data object in the old index position and writes the new data to the end of the file then returns the new index position
+    pub async fn update(
+        &self,
+        current_posision: u64,
+        current_len: usize,
+        update_data: InsertData,
+    ) -> Result<IndexId, SerializeError> {
+        let old_index_id = IndexId {
+            position: current_posision,
+            length: current_len,
+        };
+        let old_data = self.get_data_object(&old_index_id).await;
+        let mut old_data =
+            old_data.map_err(|_| SerializeError::Update("Error getting old data".to_string()))?;
+
+        let data = bincode::serialize(&update_data)
+            .map_err(|_| SerializeError::Update("Error serializing update data".to_string()))?;
+        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+        let file = File::options()
+            .append(true)
+            .open(data_file_name)
+            .await
+            .map_err(|er| {
+                error!("Error: {:?}", er);
+                SerializeError::Serialize
+            })?; // Data file
+                 // should be available at this point
+        let data_len = data.len();
+        let (position, file) = self.write_to_end(file, data).await?;
+
+        // Inactivate the old data
+        old_data.active = false;
+        let old_serialized = bincode::serialize(&old_data)
+            .map_err(|_| SerializeError::Update("Error serializing old data".to_string()))?;
+        self.seek_and_write(file, position, old_serialized).await?; //#FIXME: We should rollback the data if this fails
+        Ok(IndexId {
+            position,
+            length: data_len,
+        })
+    }
+
+    async fn write_to_end(
+        &self,
+        mut file: File,
+        data: Vec<u8>,
+    ) -> Result<(u64, File), SerializeError> {
         let position = file.seek(SeekFrom::End(0)).await.unwrap();
+        debug!("Writing data to file: {:?}", position);
+        file.write_all(&data).await.unwrap();
+        file.flush().await.unwrap();
+        Ok((position, file))
+    }
+
+    async fn seek_and_write(
+        &self,
+        mut file: File,
+        position: u64,
+        data: Vec<u8>,
+    ) -> Result<u64, SerializeError> {
+        let position = file.seek(SeekFrom::Start(position)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
         file.write_all(&data).await.unwrap();
         file.flush().await.unwrap();
@@ -193,4 +285,133 @@ impl NoSqlDataObject {
         file.read_exact(&mut data).await.unwrap();
         Ok(data)
     }
+}
+
+#[cfg(test)]
+mod test {
+
+    use super::*;
+    use crate::parser::{Data, DataObject, InsertData};
+    use std::collections::HashMap;
+    use tempfile::Builder;
+
+    async fn create_temp_data_file() -> String {
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let data_file_path = dir.path().join("test.dat");
+        let _file = File::create(&data_file_path)
+            .await
+            .expect("Failed to create temp file");
+
+        data_file_path
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn test_insert() {
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let data_file_path = dir.path().join("test.dat");
+        let _file = File::create(&data_file_path)
+            .await
+            .expect("Failed to create temp file");
+
+        let root_dir = data_file_path
+            .parent()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let mut nosql_data_object = NoSqlDataObject {
+            data_object: "test".to_string(),
+            index: HashMap::new(),
+            root: root_dir,
+        };
+
+        let data = Data {
+            key: "name".to_string(),
+            value: DataObject::String("123".to_string()),
+        };
+        let data_object = DataObject::Object(vec![data]);
+        let object_id = uuid::Uuid::new_v4().to_string();
+        let insert_data = InsertData {
+            data_object_id: object_id.clone(),
+            table: "test".to_string(),
+            data: data_object,
+            active: true,
+        };
+        let index_id = nosql_data_object.insert(insert_data).await;
+        let index_id = index_id.unwrap();
+        assert_eq!(index_id.length, 96);
+
+        let data = nosql_data_object.get_data(vec![&index_id]).await.unwrap();
+        match &data[0].data {
+            DataObject::Object(data) => {
+                assert_eq!(data[0].key, "name");
+                assert_eq!(data[0].value, DataObject::String("123".to_string()));
+            }
+            _ => panic!("Data not found"),
+        }
+
+        let data = Data {
+            key: "name".to_string(),
+            value: DataObject::String("456".to_string()),
+        };
+
+        let data_object = DataObject::Object(vec![data]);
+        let update_data = InsertData {
+            data_object_id: object_id,
+            table: "test".to_string(),
+            data: data_object,
+            active: true,
+        };
+        let new_index_id = nosql_data_object
+            .update(index_id.position, index_id.length, update_data)
+            .await
+            .unwrap();
+        let data = nosql_data_object
+            .get_data(vec![&new_index_id])
+            .await
+            .unwrap();
+        match &data[0].data {
+            DataObject::Object(data) => {
+                assert_eq!(data[0].key, "name");
+                assert_eq!(data[0].value, DataObject::String("456".to_string()));
+            }
+            _ => panic!("Data not found"),
+        }
+    }
+
+    // #[tokio::test]
+    // async fn test_update() {
+    //     let mut data_object = NoSqlDataObject {
+    //         data_object: "test".to_string(),
+    //         index: HashMap::new(),
+    //         root: "data".to_string(),
+    //     };
+    //     let insert_data = InsertData {
+    //         data: vec![1, 2, 3, 4],
+    //         active: true,
+    //     };
+    //     let index_id = data_object.insert(insert_data).await.unwrap();
+    //     let update_data = InsertData {
+    //         data: vec![5, 6, 7, 8],
+    //         active: true,
+    //     };
+    //     let new_index_id = data_object
+    //         .update(index_id.position, index_id.length, update_data)
+    //         .await
+    //         .unwrap();
+    //     let data = data_object.get_data(vec![&new_index_id]).await.unwrap();
+    //     assert_eq!(data[0].data, vec![5, 6, 7, 8]);
+    // }
 }

@@ -18,14 +18,14 @@ pub enum IndexError {
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
-pub struct ObjectId {
+pub struct IndexId {
     pub position: u64,
     pub length: usize,
 }
 
 pub struct Index {
-    index_map: BTreeMap<String, Vec<ObjectId>>, // Value -> Object IDs
-    index_file: File,                           // File to store the index
+    index_map: BTreeMap<String, Vec<IndexId>>, // Value -> Object IDs
+    index_file: File,                          // File to store the index
 }
 
 impl Index {
@@ -62,7 +62,7 @@ impl Index {
                             }
 
                             let index_map =
-                                bincode::deserialize::<BTreeMap<String, Vec<ObjectId>>>(&buffer);
+                                bincode::deserialize::<BTreeMap<String, Vec<IndexId>>>(&buffer);
                             match index_map {
                                 Ok(index_map) => {
                                     return Ok(Index {
@@ -115,29 +115,29 @@ impl Index {
         }
     }
 
-    pub fn get(&self, key: &str) -> Option<&Vec<ObjectId>> {
+    pub fn get(&self, key: &str) -> Option<&Vec<IndexId>> {
         self.index_map.get(key)
     }
 
-    pub fn range<R>(&self, range: R) -> Range<'_, String, Vec<ObjectId>>
+    pub fn range<R>(&self, range: R) -> Range<'_, String, Vec<IndexId>>
     where
         R: RangeBounds<String>,
     {
         self.index_map.range(range)
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<ObjectId>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<IndexId>)> {
         self.index_map.iter()
     }
 
-    pub fn add_to_index(&mut self, value: &str, object_id: &ObjectId) {
+    pub fn add_to_index(&mut self, value: &str, object_id: &IndexId) {
         self.index_map
             .entry(value.to_string())
             .or_insert_with(Vec::new)
             .push(object_id.clone());
     }
 
-    fn query_wildcard(&self, op: &WildCardOperations) -> Vec<&ObjectId> {
+    fn query_wildcard(&self, op: &WildCardOperations) -> Vec<&IndexId> {
         match op {
             WildCardOperations::StartsWith(_attr, prefix) => self.query_prefix(prefix),
             WildCardOperations::EndsWith(_attr, suffix) => self.query_suffix(suffix),
@@ -145,14 +145,14 @@ impl Index {
         }
     }
 
-    pub fn query_equal(&self, value: &str) -> Vec<&ObjectId> {
+    pub fn query_equal(&self, value: &str) -> Vec<&IndexId> {
         if let Some(object_ids) = self.index_map.get(value) {
             return object_ids.iter().collect();
         }
         vec![]
     }
 
-    pub fn query_range(&self, value: &str, op: RangeOp) -> Vec<&ObjectId> {
+    pub fn query_range(&self, value: &str, op: RangeOp) -> Vec<&IndexId> {
         let range = match op {
             RangeOp::GreaterThan => self.index_map.range((value.to_string())..),
             RangeOp::GreaterThanOrEqual => self.index_map.range(value.to_string()..),
@@ -166,7 +166,7 @@ impl Index {
         results
     }
 
-    pub fn query_prefix(&self, prefix: &str) -> Vec<&ObjectId> {
+    pub fn query_prefix(&self, prefix: &str) -> Vec<&IndexId> {
         let mut results = Vec::new();
         for (_key, object_ids) in self
             .index_map
@@ -178,7 +178,7 @@ impl Index {
         results
     }
 
-    pub fn query_suffix(&self, suffix: &str) -> Vec<&ObjectId> {
+    pub fn query_suffix(&self, suffix: &str) -> Vec<&IndexId> {
         let mut results = Vec::new();
         for (_key, object_ids) in self.index_map.iter().filter(|(k, _)| k.ends_with(suffix)) {
             results.extend(object_ids);
@@ -186,7 +186,7 @@ impl Index {
         results
     }
 
-    pub fn query_contains(&self, substring: &str) -> Vec<&ObjectId> {
+    pub fn query_contains(&self, substring: &str) -> Vec<&IndexId> {
         let mut results = Vec::new();
         for (_key, object_ids) in self.index_map.iter().filter(|(k, _)| k.contains(substring)) {
             results.extend(object_ids);
