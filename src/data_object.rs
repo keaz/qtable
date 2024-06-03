@@ -11,9 +11,11 @@ use crate::{
     parser::{Condition, InsertData, WildCardOperations},
 };
 
+const OBJECT_ID: &str = "object_id";
+
 pub struct NoSqlDataObject {
     data_object: String,
-    index: HashMap<String, Index>,
+    index: HashMap<String, Index>, // Attribute, Index
     root: String,
 }
 
@@ -29,6 +31,7 @@ pub enum SerializeError {
     Deserialize,
     Update(String),
     Insert(String),
+    Delete(String),
 }
 
 impl NoSqlDataObject {
@@ -37,6 +40,13 @@ impl NoSqlDataObject {
             index.add_to_index(value, object_id);
         }
     }
+
+    pub fn remove_from_index(&mut self, attribute: &str, value: &str, object_id: &IndexId) {
+        if let Some(index) = self.index.get_mut(attribute) {
+            index.remove_from_index(value, object_id);
+        }
+    }
+
     pub fn query(&self, condition: &Condition) -> Vec<&IndexId> {
         match condition {
             Condition::WildCard(op) => self.query_wildcard(op),
@@ -109,10 +119,16 @@ impl NoSqlDataObject {
         }
         vec![]
     }
+
+    pub async fn insert(&mut self, insert_data: InsertData) -> Result<(), SerializeError> {
+        let index_id = self.insert_record(&insert_data).await?;
+        self.add_to_index(OBJECT_ID, &insert_data.data_object_id, &index_id); //# FIXME: should add other attributes to the index considering the definition
+        Ok(())
+    }
 }
 
 impl NoSqlDataObject {
-    pub async fn insert(&mut self, insert_data: InsertData) -> Result<IndexId, SerializeError> {
+    async fn insert_record(&mut self, insert_data: &InsertData) -> Result<IndexId, SerializeError> {
         let serialized = bincode::serialize(&insert_data);
         match serialized {
             Ok(data) => {
@@ -143,7 +159,7 @@ impl NoSqlDataObject {
         }
     }
 
-    pub async fn get_data(
+    async fn get_record(
         &self,
         data_objects: Vec<&IndexId>,
     ) -> Result<Vec<InsertData>, SerializeError> {
@@ -207,7 +223,7 @@ impl NoSqlDataObject {
     ///
     /// Update the data object at the given position with the new data
     /// Inactivates the old data object in the old index position and writes the new data to the end of the file then returns the new index position
-    pub async fn update(
+    async fn update_record(
         &self,
         current_posision: u64,
         current_len: usize,
@@ -245,6 +261,39 @@ impl NoSqlDataObject {
             position,
             length: data_len,
         })
+    }
+
+    async fn delete_record(&mut self, index_id: &IndexId) -> Result<(), SerializeError> {
+        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+        let file = File::open(data_file_name).await;
+        match file {
+            Ok(mut file) => {
+                let mut data = vec![0; index_id.length];
+                file.seek(SeekFrom::Start(index_id.position)).await.unwrap();
+                file.read_exact(&mut data).await.unwrap();
+                let data_object = bincode::deserialize::<InsertData>(&data);
+                match data_object {
+                    Ok(mut data_object) => {
+                        data_object.active = false;
+                        let data = bincode::serialize(&data_object).map_err(|_| {
+                            SerializeError::Delete("Error serializing data".to_string())
+                        })?;
+                        self.seek_and_write(file, index_id.position, data).await?;
+                        Ok(())
+                    }
+                    Err(e) => {
+                        error!("Error: {:?}", e);
+                        Err(SerializeError::Deserialize)
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Error: {:?}", e);
+                Err(SerializeError::Update(
+                    "Error opening data file".to_string(),
+                ))
+            }
+        }
     }
 
     async fn write_to_end(
@@ -295,24 +344,6 @@ mod test {
     use std::collections::HashMap;
     use tempfile::Builder;
 
-    async fn create_temp_data_file() -> String {
-        let dir = Builder::new()
-            .prefix("data")
-            .tempdir()
-            .expect("Failed to create temp directory");
-        let data_file_path = dir.path().join("test.dat");
-        let _file = File::create(&data_file_path)
-            .await
-            .expect("Failed to create temp file");
-
-        data_file_path
-            .parent()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .to_string()
-    }
-
     #[tokio::test]
     async fn test_insert() {
         let dir = Builder::new()
@@ -349,11 +380,11 @@ mod test {
             data: data_object,
             active: true,
         };
-        let index_id = nosql_data_object.insert(insert_data).await;
+        let index_id = nosql_data_object.insert_record(&insert_data).await;
         let index_id = index_id.unwrap();
         assert_eq!(index_id.length, 96);
 
-        let data = nosql_data_object.get_data(vec![&index_id]).await.unwrap();
+        let data = nosql_data_object.get_record(vec![&index_id]).await.unwrap();
         match &data[0].data {
             DataObject::Object(data) => {
                 assert_eq!(data[0].key, "name");
@@ -375,11 +406,11 @@ mod test {
             active: true,
         };
         let new_index_id = nosql_data_object
-            .update(index_id.position, index_id.length, update_data)
+            .update_record(index_id.position, index_id.length, update_data)
             .await
             .unwrap();
         let data = nosql_data_object
-            .get_data(vec![&new_index_id])
+            .get_record(vec![&new_index_id])
             .await
             .unwrap();
         match &data[0].data {
@@ -390,28 +421,4 @@ mod test {
             _ => panic!("Data not found"),
         }
     }
-
-    // #[tokio::test]
-    // async fn test_update() {
-    //     let mut data_object = NoSqlDataObject {
-    //         data_object: "test".to_string(),
-    //         index: HashMap::new(),
-    //         root: "data".to_string(),
-    //     };
-    //     let insert_data = InsertData {
-    //         data: vec![1, 2, 3, 4],
-    //         active: true,
-    //     };
-    //     let index_id = data_object.insert(insert_data).await.unwrap();
-    //     let update_data = InsertData {
-    //         data: vec![5, 6, 7, 8],
-    //         active: true,
-    //     };
-    //     let new_index_id = data_object
-    //         .update(index_id.position, index_id.length, update_data)
-    //         .await
-    //         .unwrap();
-    //     let data = data_object.get_data(vec![&new_index_id]).await.unwrap();
-    //     assert_eq!(data[0].data, vec![5, 6, 7, 8]);
-    // }
 }

@@ -24,7 +24,7 @@ pub struct IndexId {
 }
 
 pub struct Index {
-    index_map: BTreeMap<String, Vec<IndexId>>, // Value -> Object IDs
+    index_map: BTreeMap<String, Vec<IndexId>>, // Attribute Value, Object Ids
     index_file: File,                          // File to store the index
 }
 
@@ -48,10 +48,10 @@ impl Index {
                     Ok(metadata) => {
                         // If the file is empty, we can return a new IndexManager
                         if metadata.len() == 0 {
-                            return Ok(Index {
+                            Ok(Index {
                                 index_file: file,
                                 index_map: BTreeMap::new(),
-                            });
+                            })
                         } else {
                             let mut buffer = Vec::new();
                             if let Err(e) = file.read_to_end(&mut buffer).await {
@@ -65,25 +65,25 @@ impl Index {
                                 bincode::deserialize::<BTreeMap<String, Vec<IndexId>>>(&buffer);
                             match index_map {
                                 Ok(index_map) => {
-                                    return Ok(Index {
+                                    Ok(Index {
                                         index_file: file,
                                         index_map,
-                                    });
+                                    })
                                 }
                                 Err(e) => {
-                                    return Err(IndexError::Load(format!(
+                                    Err(IndexError::Load(format!(
                                         "Error deserializing index file: {}",
                                         e
-                                    )));
+                                    )))
                                 }
                             }
                         }
                     }
                     Err(e) => {
-                        return Err(IndexError::Load(format!(
+                        Err(IndexError::Load(format!(
                             "Error reading index file metadata: {}",
                             e
-                        )));
+                        )))
                     }
                 }
             }
@@ -133,8 +133,14 @@ impl Index {
     pub fn add_to_index(&mut self, value: &str, object_id: &IndexId) {
         self.index_map
             .entry(value.to_string())
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(object_id.clone());
+    }
+
+    pub fn remove_from_index(&mut self, value: &str, object_id: &IndexId) {
+        if let Some(object_ids) = self.index_map.get_mut(value) {
+            object_ids.retain(|id| id != object_id);
+        }
     }
 
     fn query_wildcard(&self, op: &WildCardOperations) -> Vec<&IndexId> {
