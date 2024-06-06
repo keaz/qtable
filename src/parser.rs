@@ -8,7 +8,7 @@ use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while1},
     character::complete::{alpha1, char, multispace0, multispace1, space0},
-    combinator::map,
+    combinator::{map, map_res},
     multi::many0,
     sequence::{delimited, preceded, tuple},
     IResult,
@@ -111,6 +111,20 @@ pub enum SyntaxError {
     ParseError(String),
 }
 
+impl Display for SyntaxError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SyntaxError::SyntaxError(code, message) => {
+                write!(f, "Error {}: {}", code, message)
+            }
+            SyntaxError::ParseError(message) => {
+                write!(f, "Parse error: {}", message)
+            }
+        }
+    }
+    
+}
+
 /// DeleteData is a type alias for a tuple that represents the data to be deleted
 #[derive(Debug)]
 pub struct DeleteData {
@@ -181,7 +195,7 @@ pub enum Command {
     Select(Query),
     /// Insert is a variant that represents an insert command
     Insert(InsertData),
-    Update(InsertData),
+    Update(InsertData,Query),
     Delete(DeleteData),
     Create,
     Define(String, HashMap<String, Definition>),
@@ -375,6 +389,10 @@ fn parse_define_command(input: &str) -> Result<Command, SyntaxError> {
     }
 }
 
+///
+/// parse_update_command is a function that parses an update command and returns a Command or a SyntaxError
+/// UPDATE user {"name":"John","age":30} WHERE id = '123' and name = 'John' and age >= 30
+/// 
 fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, UPDATE) {
         Ok((input, _)) => input,
@@ -398,6 +416,46 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
+    let (input, json) = match extract_update_json(input) {
+        Ok((input,json)) => (input,json),
+        Err(err) => {
+            error!("Error: {:?}", err);
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse the update json : {:?}",
+                err
+            )));
+        },
+    };
+
+    let update_data = parse_json_value(json)?;
+
+    let input = match remove_white_spaces(input) {
+        Ok((input,_)) => input,
+        Err(_) => {
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse the update command : {:?} ",input
+            )));
+        },
+    };
+    
+    let input = match remove(input, "WHERE") {
+        Ok((input,_)) => input,
+        Err(_) => {
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse the update command : {:?} ",input
+            )));
+        },
+    };
+
+    let input = match remove_white_spaces(input) {
+        Ok((input,_)) => input,
+        Err(_err) => {
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse the update command : {:?} ",input
+            )));
+        },
+    };
+
     let (_, json_str) = match extract_json(input) {
         Ok((input, json_str)) => (input, json_str),
         Err(err) => {
@@ -409,24 +467,45 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    match parse_json(json_str, table_name) {
-        Ok((_id, table, data)) => {
-            let update_data = InsertData {
-                data_object_id: "".to_string(),
-                table: table.to_string(),
-                data,
-                active: true,
-            };
-            Ok(Command::Update(update_data))
+    let (_input, filter) = match parse_condition(input) {
+        Ok((input, filter)) => (input, filter),
+        Err(x) => {
+            error!("Error: {:?}", x);
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse condition: {:?}",
+                x
+            )));
         }
-        Err(e) => {
-            error!("Error: {:?}", e);
-            Err(SyntaxError::ParseError(format!(
-                "Could not parse JSON: {:?}",
-                e
-            )))
-        }
-    }
+    };
+
+    let query = Query {
+        db: db.to_string(),
+        table_name: table_name.to_string(),
+        filter,
+    };
+    
+    let update_data = InsertData {
+        data_object_id: "".to_string(),
+        table: table_name.to_string(),
+        data: update_data,
+        active: true,
+    };
+    
+    Ok(Command::Update(update_data,query))
+}
+
+fn remove_white_spaces(input: &str) -> IResult<&str, &str> {
+    take_while(|c: char| c.is_whitespace())(input)
+}
+
+fn extract_update_json(input: &str) -> IResult<&str, Value> {
+    delimited(char('{'), parse_update_json, char('}'))(input)
+}
+fn parse_update_json(input: &str) -> IResult<&str, Value> {
+    map_res(
+        take_while(|c| c != '}'),
+        |s: &str| serde_json::from_str(&format!("{{{}}}", s)),
+    )(input)
 }
 
 /// parse_delete_command is a function that parses a delete command and returns a Command or a SyntaxError
@@ -592,6 +671,20 @@ fn parse_json<'a>(
     }
 }
 
+fn parse_json_value<'a>(
+    json: Value
+) -> Result<DataObject, SyntaxError> {
+    match json {
+        Value::Object(obj) => {
+            let data = handle_object(obj.to_owned());
+            Ok(data)
+        }
+        _ => Err(SyntaxError::ParseError(format!(
+            "Unable to parse JSON: {:?}", json
+        ))),
+    }
+}
+
 fn get_id(obj: &serde_json::Map<String, Value>) -> Result<String, SyntaxError> {
     let id = match obj.get("id") {
         Some(some) => match some {
@@ -658,7 +751,7 @@ fn handle_object(object: serde_json::Map<String, Value>) -> DataObject {
 /// # Example
 /// ```
 /// use crate::parse::{parse_select, Command, SyntaxError};
-/// let message = "SELECT db.user WHERE id = '123' and name = 'John' and age >= 30";
+/// let message = "SELECT user WHERE id = '123' and name = 'John' and age >= 30";
 /// let result = parse_select(message);
 /// match result {
 ///     Ok(Command::Select(fields, table)) => {

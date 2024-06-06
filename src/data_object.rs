@@ -1,4 +1,4 @@
-use std::{collections::HashMap, io::SeekFrom};
+use std::{collections::HashMap, fmt::{Display, Formatter}, io::SeekFrom};
 
 use log::{debug, error};
 use tokio::{
@@ -8,7 +8,7 @@ use tokio::{
 
 use crate::{
     index::{Index, IndexId},
-    parser::{Condition, InsertData, WildCardOperations},
+    parser::{Condition, InsertData, Query, WildCardOperations},
 };
 
 const OBJECT_ID: &str = "object_id";
@@ -27,12 +27,26 @@ pub enum RangeOp {
 }
 #[derive(Debug)]
 pub enum SerializeError {
-    Serialize,
-    Deserialize,
+    Serialize(String),
+    Deserialize(String),
     Update(String),
     Insert(String),
     Delete(String),
 }
+
+impl Display for SerializeError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SerializeError::Serialize(e) => write!(f, "Serialize Error: {}", e),
+            SerializeError::Deserialize(e) => write!(f, "Deserialize Error: {}", e),
+            SerializeError::Update(e) => write!(f, "Update Error: {}", e),
+            SerializeError::Insert(e) => write!(f, "Insert Error: {}", e),
+            SerializeError::Delete(e) => write!(f, "Delete Error: {}", e),
+        }
+    }
+}
+
+
 
 impl NoSqlDataObject {
     pub fn add_to_index(&mut self, attribute: &str, value: &str, object_id: &IndexId) {
@@ -47,7 +61,12 @@ impl NoSqlDataObject {
         }
     }
 
-    pub fn query(&self, condition: &Condition) -> Vec<&IndexId> {
+    pub async fn handle_query(&self, condition: &Condition) -> Result<Vec<InsertData>, SerializeError> {
+        let object_ids = self.query(condition);
+        self.get_record(object_ids).await
+    }
+
+    fn query(&self, condition: &Condition) -> Vec<&IndexId> {
         match condition {
             Condition::WildCard(op) => self.query_wildcard(op),
             Condition::Equal(attr, value) => self.query_equal(attr, value),
@@ -120,9 +139,20 @@ impl NoSqlDataObject {
         vec![]
     }
 
-    pub async fn insert(&mut self, insert_data: InsertData) -> Result<(), SerializeError> {
-        let index_id = self.insert_record(&insert_data).await?;
+    pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), SerializeError> {
+        let index_id = self.insert_record(insert_data).await?;
         self.add_to_index(OBJECT_ID, &insert_data.data_object_id, &index_id); //# FIXME: should add other attributes to the index considering the definition
+        Ok(())
+    }
+
+    pub async fn handle_update(&mut self, update_data: &InsertData, query: Query) -> Result<(), SerializeError> {
+        let index_id = self.query(&query.filter);
+        if index_id.is_empty() {
+            return Err(SerializeError::Update("Data not found".to_string()));
+        }
+        let index_id = index_id[0];
+        let new_index_id = self.update_record(index_id.position, index_id.length, &update_data).await?;
+        self.add_to_index(OBJECT_ID, &update_data.data_object_id, &new_index_id);
         Ok(())
     }
 }
@@ -154,7 +184,7 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Serialize)
+                Err(SerializeError::Serialize("Error serializing data".to_string()))
             }
         }
     }
@@ -181,14 +211,14 @@ impl NoSqlDataObject {
                         Ok(data_object) => data.push(data_object),
                         Err(e) => {
                             error!("Error: {:?}", e);
-                            return Err(SerializeError::Deserialize);
+                            return Err(SerializeError::Deserialize("Error deserializing data".to_string()));
                         }
                     }
                 }
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                return Err(SerializeError::Serialize);
+                return Err(SerializeError::Serialize("Error opening data file".to_string()));
             }
         }
         Ok(data)
@@ -209,13 +239,13 @@ impl NoSqlDataObject {
                     Ok(data_object) => Ok(data_object),
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::Deserialize)
+                        Err(SerializeError::Deserialize("Error deserializing data".to_string()))
                     }
                 }
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Serialize)
+                Err(SerializeError::Serialize("Error opening data file".to_string()))
             }
         }
     }
@@ -227,7 +257,7 @@ impl NoSqlDataObject {
         &self,
         current_posision: u64,
         current_len: usize,
-        update_data: InsertData,
+        update_data: &InsertData,
     ) -> Result<IndexId, SerializeError> {
         let old_index_id = IndexId {
             position: current_posision,
@@ -237,7 +267,7 @@ impl NoSqlDataObject {
         let mut old_data =
             old_data.map_err(|_| SerializeError::Update("Error getting old data".to_string()))?;
 
-        let data = bincode::serialize(&update_data)
+        let data = bincode::serialize(update_data)
             .map_err(|_| SerializeError::Update("Error serializing update data".to_string()))?;
         let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
         let file = File::options()
@@ -246,7 +276,7 @@ impl NoSqlDataObject {
             .await
             .map_err(|er| {
                 error!("Error: {:?}", er);
-                SerializeError::Serialize
+                SerializeError::Serialize("Error opening data file".to_string())
             })?; // Data file
                  // should be available at this point
         let data_len = data.len();
@@ -283,7 +313,7 @@ impl NoSqlDataObject {
                     }
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::Deserialize)
+                        Err(SerializeError::Deserialize("Error deserializing data".to_string()))
                     }
                 }
             }
@@ -406,7 +436,7 @@ mod test {
             active: true,
         };
         let new_index_id = nosql_data_object
-            .update_record(index_id.position, index_id.length, update_data)
+            .update_record(index_id.position, index_id.length, &update_data)
             .await
             .unwrap();
         let data = nosql_data_object
