@@ -64,27 +64,21 @@ impl Index {
                             let index_map =
                                 bincode::deserialize::<BTreeMap<String, Vec<IndexId>>>(&buffer);
                             match index_map {
-                                Ok(index_map) => {
-                                    Ok(Index {
-                                        index_file: file,
-                                        index_map,
-                                    })
-                                }
-                                Err(e) => {
-                                    Err(IndexError::Load(format!(
-                                        "Error deserializing index file: {}",
-                                        e
-                                    )))
-                                }
+                                Ok(index_map) => Ok(Index {
+                                    index_file: file,
+                                    index_map,
+                                }),
+                                Err(e) => Err(IndexError::Load(format!(
+                                    "Error deserializing index file: {}",
+                                    e
+                                ))),
                             }
                         }
                     }
-                    Err(e) => {
-                        Err(IndexError::Load(format!(
-                            "Error reading index file metadata: {}",
-                            e
-                        )))
-                    }
+                    Err(e) => Err(IndexError::Load(format!(
+                        "Error reading index file metadata: {}",
+                        e
+                    ))),
                 }
             }
             Err(_) => todo!(),

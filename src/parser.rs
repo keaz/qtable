@@ -1,7 +1,4 @@
-use std::{
-    collections::HashMap,
-    fmt::{format, Display},
-};
+use std::{collections::HashMap, fmt::Display};
 
 use log::error;
 use nom::{
@@ -122,15 +119,6 @@ impl Display for SyntaxError {
             }
         }
     }
-    
-}
-
-/// DeleteData is a type alias for a tuple that represents the data to be deleted
-#[derive(Debug)]
-pub struct DeleteData {
-    pub db: String,
-    pub table: String,
-    pub data: DataObject,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -147,7 +135,7 @@ pub struct Definition {
     pub optional: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Condition {
     WildCard(WildCardOperations),
     Equal(String, String),
@@ -159,7 +147,7 @@ pub enum Condition {
     Or(Box<Condition>, Box<Condition>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum WildCardOperations {
     StartsWith(String, String),
     EndsWith(String, String),
@@ -195,8 +183,8 @@ pub enum Command {
     Select(Query),
     /// Insert is a variant that represents an insert command
     Insert(InsertData),
-    Update(InsertData,Query),
-    Delete(DeleteData),
+    Update(InsertData, Query),
+    Delete(Query),
     Create,
     Define(String, HashMap<String, Definition>),
     Alter,
@@ -392,7 +380,7 @@ fn parse_define_command(input: &str) -> Result<Command, SyntaxError> {
 ///
 /// parse_update_command is a function that parses an update command and returns a Command or a SyntaxError
 /// UPDATE user {"name":"John","age":30} WHERE id = '123' and name = 'John' and age >= 30
-/// 
+///
 fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, UPDATE) {
         Ok((input, _)) => input,
@@ -417,43 +405,46 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     };
 
     let (input, json) = match extract_update_json(input) {
-        Ok((input,json)) => (input,json),
+        Ok((input, json)) => (input, json),
         Err(err) => {
             error!("Error: {:?}", err);
             return Err(SyntaxError::ParseError(format!(
                 "Could not parse the update json : {:?}",
                 err
             )));
-        },
+        }
     };
 
     let update_data = parse_json_value(json)?;
 
     let input = match remove_white_spaces(input) {
-        Ok((input,_)) => input,
+        Ok((input, _)) => input,
         Err(_) => {
             return Err(SyntaxError::ParseError(format!(
-                "Could not parse the update command : {:?} ",input
+                "Could not parse the update command : {:?} ",
+                input
             )));
-        },
+        }
     };
-    
+
     let input = match remove(input, "WHERE") {
-        Ok((input,_)) => input,
+        Ok((input, _)) => input,
         Err(_) => {
             return Err(SyntaxError::ParseError(format!(
-                "Could not parse the update command : {:?} ",input
+                "Could not parse the update command : {:?} ",
+                input
             )));
-        },
+        }
     };
 
     let input = match remove_white_spaces(input) {
-        Ok((input,_)) => input,
+        Ok((input, _)) => input,
         Err(_err) => {
             return Err(SyntaxError::ParseError(format!(
-                "Could not parse the update command : {:?} ",input
+                "Could not parse the update command : {:?} ",
+                input
             )));
-        },
+        }
     };
 
     let (_, json_str) = match extract_json(input) {
@@ -483,15 +474,15 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         table_name: table_name.to_string(),
         filter,
     };
-    
+
     let update_data = InsertData {
         data_object_id: "".to_string(),
         table: table_name.to_string(),
         data: update_data,
         active: true,
     };
-    
-    Ok(Command::Update(update_data,query))
+
+    Ok(Command::Update(update_data, query))
 }
 
 fn remove_white_spaces(input: &str) -> IResult<&str, &str> {
@@ -502,17 +493,16 @@ fn extract_update_json(input: &str) -> IResult<&str, Value> {
     delimited(char('{'), parse_update_json, char('}'))(input)
 }
 fn parse_update_json(input: &str) -> IResult<&str, Value> {
-    map_res(
-        take_while(|c| c != '}'),
-        |s: &str| serde_json::from_str(&format!("{{{}}}", s)),
-    )(input)
+    map_res(take_while(|c| c != '}'), |s: &str| {
+        serde_json::from_str(&format!("{{{}}}", s))
+    })(input)
 }
 
 /// parse_delete_command is a function that parses a delete command and returns a Command or a SyntaxError
 /// # Example
 /// ```
 /// use crate::parse::{parse_delete_command, Command, SyntaxError};
-/// let message = r#"DELETE FROM user { id: "123"}";
+/// let message = r#"DELETE FROM user WHERE id = '123' and name = 'John' and age >= 30";
 /// let result = parse_delete_command(message);
 /// match result {
 ///  Ok(Command::Delete((table, data))) => {
@@ -556,24 +546,35 @@ fn parse_delete_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    let (_, json_str) = match extract_json(input) {
-        Ok((json_str, input)) => (input, json_str),
+    let input = match remove(input, "WHERE") {
+        Ok((input, _)) => input,
         Err(err) => {
             error!("Error: {:?}", err);
+            return Err(SyntaxError::SyntaxError(
+                SyntaxErrorCode::InvalidValue,
+                format!("Expected WHERE but found {}", err),
+            ));
+        }
+    };
+
+    let (_input, filter) = match parse_condition(input) {
+        Ok((input, filter)) => (input, filter),
+        Err(x) => {
+            error!("Error: {:?}", x);
             return Err(SyntaxError::ParseError(format!(
-                "Could not parse JSON: {:?}",
-                err
+                "Could not parse condition: {:?}",
+                x
             )));
         }
     };
 
-    let (table, data) = parse_delete_json(json_str, table_name)?;
-    let delete_data = DeleteData {
+    let query = Query {
         db: db.to_string(),
-        table,
-        data,
+        table_name: table_name.to_string(),
+        filter,
     };
-    Ok(Command::Delete(delete_data))
+
+    Ok(Command::Delete(query))
 }
 
 fn parse_delete_json<'a>(
@@ -671,16 +672,15 @@ fn parse_json<'a>(
     }
 }
 
-fn parse_json_value<'a>(
-    json: Value
-) -> Result<DataObject, SyntaxError> {
+fn parse_json_value<'a>(json: Value) -> Result<DataObject, SyntaxError> {
     match json {
         Value::Object(obj) => {
             let data = handle_object(obj.to_owned());
             Ok(data)
         }
         _ => Err(SyntaxError::ParseError(format!(
-            "Unable to parse JSON: {:?}", json
+            "Unable to parse JSON: {:?}",
+            json
         ))),
     }
 }
@@ -941,35 +941,47 @@ mod tests {
     #[test]
     fn test_parse_delete_command() {
         let db = "db";
-        let message = r#"DELETE FROM user { "id": "123", "name":"John","age":30}"#;
-        if let Command::Delete(delete_data) = parse_delete_command(db, message).unwrap() {
-            assert_eq!(delete_data.table, "user");
-            match delete_data.data {
-                DataObject::Object(data) => {
-                    assert_eq!(data[1].key, "id");
-                    match &data[1].value {
-                        DataObject::String(s) => {
-                            assert_eq!(s.as_str(), "123")
+        let message = r#"DELETE FROM user WHERE id = '123' AND (name = 'John' OR age >= 30)"#;
+        if let Command::Delete(query) = parse_delete_command(db, message).unwrap() {
+            match query.filter {
+                Condition::And(left, right) => {
+                    match *left {
+                        Condition::Equal(field, value) => {
+                            assert_eq!(field, "id");
+                            assert_eq!(value, "123");
                         }
-                        _ => panic!("Expected string"),
-                    };
-                    assert_eq!(data[0].key, "age");
-                    match &data[0].value {
-                        DataObject::Number(n) => {
-                            assert_eq!(n, &30.into())
+                        _ => {
+                            panic!("Expected Equal operation");
                         }
-                        _ => panic!("Expected number"),
-                    };
-                    assert_eq!(data[2].key, "name");
-                    match &data[2].value {
-                        DataObject::String(s) => {
-                            assert_eq!(s.as_str(), "John")
+                    }
+                    match *right {
+                        Condition::Or(left, right) => {
+                            match *left {
+                                Condition::Equal(field, value) => {
+                                    assert_eq!(field, "name");
+                                    assert_eq!(value, "John");
+                                }
+                                _ => {
+                                    panic!("Expected Equal operation");
+                                }
+                            }
+                            match *right {
+                                Condition::GreaterThanOrEqual(field, value) => {
+                                    assert_eq!(field, "age");
+                                    assert_eq!(value, "30");
+                                }
+                                _ => {
+                                    panic!("Expected GreaterThanOrEqual operation");
+                                }
+                            }
                         }
-                        _ => panic!("Expected number"),
-                    };
+                        _ => {
+                            panic!("Expected Or operation");
+                        }
+                    }
                 }
                 _ => {
-                    panic!("Expected object");
+                    panic!("Expected And operation");
                 }
             }
         } else {
