@@ -535,7 +535,7 @@ fn parse_delete_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    let (input, table_name) = match extract_table_name(input) {
+    let (input, table_name) = match extract_select_table(input) {
         Ok((input, table_name)) => (input, table_name),
         Err(err) => {
             error!("Error: {:?}", err);
@@ -941,6 +941,7 @@ mod tests {
     #[test]
     fn test_parse_delete_command() {
         let db = "db";
+                            //SELECT       user WHERE id = '123' and name = 'John' and age >= 30
         let message = r#"DELETE FROM user WHERE id = '123' AND (name = 'John' OR age >= 30)"#;
         if let Command::Delete(query) = parse_delete_command(db, message).unwrap() {
             match query.filter {

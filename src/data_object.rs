@@ -7,21 +7,24 @@ use std::{
 
 use log::{debug, error};
 use tokio::{
-    fs::File,
+    fs::{self, File},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
 };
 
 use crate::{
     index::{Index, IndexId},
-    parser::{Condition, InsertData, Query, WildCardOperations},
+    parser::{Condition, Definition, InsertData, Query, WildCardOperations},
 };
 
 const OBJECT_ID: &str = "object_id";
+const DEF_FILE: &str = ".def";
+const INDEX_FOLDER: &str = "idx";
+const DATA_FOLDER: &str = "dat";
 
 pub struct NoSqlDataObject {
     data_object: String,
     index: HashMap<String, Index>, // Attribute, Index
-    root: String,
+    root_path: String,
 }
 
 pub enum RangeOp {
@@ -31,36 +34,75 @@ pub enum RangeOp {
     LessThanOrEqual,
 }
 #[derive(Debug)]
-pub enum SerializeError {
+pub enum DataObjectError {
     Serialize(String),
     Deserialize(String),
     Update(String),
     Insert(String),
     Delete(String),
+    Create(String),
 }
 
-impl Display for SerializeError {
+impl Display for DataObjectError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            SerializeError::Serialize(e) => write!(f, "Serialize Error: {}", e),
-            SerializeError::Deserialize(e) => write!(f, "Deserialize Error: {}", e),
-            SerializeError::Update(e) => write!(f, "Update Error: {}", e),
-            SerializeError::Insert(e) => write!(f, "Insert Error: {}", e),
-            SerializeError::Delete(e) => write!(f, "Delete Error: {}", e),
+            DataObjectError::Serialize(e) => write!(f, "Serialize Error: {}", e),
+            DataObjectError::Deserialize(e) => write!(f, "Deserialize Error: {}", e),
+            DataObjectError::Update(e) => write!(f, "Update Error: {}", e),
+            DataObjectError::Insert(e) => write!(f, "Insert Error: {}", e),
+            DataObjectError::Delete(e) => write!(f, "Delete Error: {}", e),
+            DataObjectError::Create(e) => write!(f, "Create Error: {}", e),
         }
     }
 }
 
 impl NoSqlDataObject {
-    pub fn new(data_object: &str, root: String) -> Self {
-        NoSqlDataObject {
+    pub async fn new(data_object: &str, root: &str, definition: HashMap<String,Definition>) -> Result<Self,DataObjectError> {
+        let root_path = format!("{}/{}", root, data_object);
+        
+        let index_path = format!("{}/{}/{}", root, data_object, INDEX_FOLDER);
+        let data_path = format!("{}/{}/{}", root, data_object, DATA_FOLDER);
+        //create root_path folder and other subfolders
+        let _ = fs::create_dir_all(&root_path).await.map_err(|e| DataObjectError::Create(format!("Error creating root path: {}", e)))?;
+        let _ = fs::create_dir_all(&index_path).await.map_err(|e| DataObjectError::Create(format!("Error creating index path: {}", e)))?;
+        let _ = fs::create_dir_all(&data_path).await.map_err(|e| DataObjectError::Create(format!("Error creating data path: {}", e)))?;
+
+        create_def(data_object, &definition).await?;
+
+        let mut index = HashMap::new();
+        for (attribute, def) in definition {
+            
+            let _ = fs::create_dir(def_file).await.map_err(|e| DataObjectError::Create(format!("Error creating definition file: {}", e)))?;
+
+            let data_file = format!("{}/{}.dat", data_path, attribute);
+            if def.indexed {
+                let index_file = format!("{}/{}.idx", index_path, attribute);
+            }
+            
+        }
+
+        Ok(NoSqlDataObject {
             data_object: data_object.to_string(),
             index: HashMap::new(),
-            root,
-        }
+            root_path: format!("{}/{}", root, data_object),
+        })
     }
-
     
+}
+
+async fn create_data_file(root_path:&str,data_object: &str) -> Result<(), DataObjectError> {
+    let data_file = format!("{}/{}.dat", root_path, data_object);
+    //let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
+    let _ = File::create(data_file).await.map_err(|e| DataObjectError::Create(format!("Error creating data file: {}", e)))?;
+    Ok(())
+}
+
+async fn create_def(data_object: &str, definition: &HashMap<String, Definition>) -> Result<(), DataObjectError> {
+    let def_file = format!("{}/{}", data_object, DEF_FILE);
+    let mut def_file = File::create(def_file).await.map_err(|e| DataObjectError::Create(format!("Error creating definition file: {}", e)))?;
+    let def = bincode::serialize(definition).map_err(|e| DataObjectError::Serialize(format!("Error serializing definition: {}", e)))?;
+    def_file.write_all(&def).await.map_err(|e| DataObjectError::Create(format!("Error writing definition file: {}", e)))?;
+    Ok(())
 }
 
 impl NoSqlDataObject {
@@ -79,7 +121,7 @@ impl NoSqlDataObject {
     pub async fn handle_query(
         &self,
         condition: &Condition,
-    ) -> Result<Vec<InsertData>, SerializeError> {
+    ) -> Result<Vec<InsertData>, DataObjectError> {
         let object_ids = self.query(condition);
         self.get_record(object_ids).await
     }
@@ -157,7 +199,7 @@ impl NoSqlDataObject {
         vec![]
     }
 
-    pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), SerializeError> {
+    pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), DataObjectError> {
         let index_id = self.insert_record(insert_data).await?;
         self.add_to_index(OBJECT_ID, &insert_data.data_object_id, &index_id); //# FIXME: should add other attributes to the index considering the definition
         Ok(())
@@ -167,10 +209,10 @@ impl NoSqlDataObject {
         &mut self,
         update_data: &InsertData,
         query: Query,
-    ) -> Result<(), SerializeError> {
+    ) -> Result<(), DataObjectError> {
         let index_id = self.query(&query.filter);
         if index_id.is_empty() {
-            return Err(SerializeError::Update("Data not found".to_string()));
+            return Err(DataObjectError::Update("Data not found".to_string()));
         }
         let index_id = index_id[0];
         let new_index_id = self
@@ -180,10 +222,10 @@ impl NoSqlDataObject {
         Ok(())
     }
 
-    pub async fn handle_delete(&mut self, query: &Query) -> Result<(), SerializeError> {
+    pub async fn handle_delete(&mut self, query: &Query) -> Result<(), DataObjectError> {
         let index_ids = self.query(&query.filter);
         if index_ids.is_empty() {
-            return Err(SerializeError::Delete("Data not found".to_string()));
+            return Err(DataObjectError::Delete("Data not found".to_string()));
         }
         let deleted_data = self.delete_records(index_ids).await?;
         for (deleted_data, index_id) in deleted_data {
@@ -194,11 +236,11 @@ impl NoSqlDataObject {
 }
 
 impl NoSqlDataObject {
-    async fn insert_record(&self, insert_data: &InsertData) -> Result<IndexId, SerializeError> {
+    async fn insert_record(&self, insert_data: &InsertData) -> Result<IndexId, DataObjectError> {
         let serialized = bincode::serialize(&insert_data);
         match serialized {
             Ok(data) => {
-                let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+                let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
                 let file = File::options().append(true).open(data_file_name).await; // Data file
                                                                                     // should be available at this point
                 match file {
@@ -212,7 +254,7 @@ impl NoSqlDataObject {
                     }
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::Insert(
+                        Err(DataObjectError::Insert(
                             "Error opening data file".to_string(),
                         ))
                     }
@@ -220,7 +262,7 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Serialize(
+                Err(DataObjectError::Serialize(
                     "Error serializing data".to_string(),
                 ))
             }
@@ -230,8 +272,8 @@ impl NoSqlDataObject {
     async fn get_record(
         &self,
         data_objects: Vec<&IndexId>,
-    ) -> Result<Vec<InsertData>, SerializeError> {
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+    ) -> Result<Vec<InsertData>, DataObjectError> {
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::open(data_file_name).await;
         let mut data = vec![];
         match file {
@@ -249,7 +291,7 @@ impl NoSqlDataObject {
                         Ok(data_object) => data.push(data_object),
                         Err(e) => {
                             error!("Error: {:?}", e);
-                            return Err(SerializeError::Deserialize(
+                            return Err(DataObjectError::Deserialize(
                                 "Error deserializing data".to_string(),
                             ));
                         }
@@ -258,7 +300,7 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                return Err(SerializeError::Serialize(
+                return Err(DataObjectError::Serialize(
                     "Error opening data file".to_string(),
                 ));
             }
@@ -266,8 +308,8 @@ impl NoSqlDataObject {
         Ok(data)
     }
 
-    async fn get_data_object(&self, data_object: &IndexId) -> Result<InsertData, SerializeError> {
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+    async fn get_data_object(&self, data_object: &IndexId) -> Result<InsertData, DataObjectError> {
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::open(data_file_name).await;
         match file {
             Ok(mut file) => {
@@ -281,7 +323,7 @@ impl NoSqlDataObject {
                     Ok(data_object) => Ok(data_object),
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::Deserialize(
+                        Err(DataObjectError::Deserialize(
                             "Error deserializing data".to_string(),
                         ))
                     }
@@ -289,7 +331,7 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Serialize(
+                Err(DataObjectError::Serialize(
                     "Error opening data file".to_string(),
                 ))
             }
@@ -304,25 +346,25 @@ impl NoSqlDataObject {
         current_posision: u64,
         current_len: usize,
         update_data: &InsertData,
-    ) -> Result<IndexId, SerializeError> {
+    ) -> Result<IndexId, DataObjectError> {
         let old_index_id = IndexId {
             position: current_posision,
             length: current_len,
         };
         let old_data = self.get_data_object(&old_index_id).await;
         let mut old_data =
-            old_data.map_err(|_| SerializeError::Update("Error getting old data".to_string()))?;
+            old_data.map_err(|_| DataObjectError::Update("Error getting old data".to_string()))?;
 
         let data = bincode::serialize(update_data)
-            .map_err(|_| SerializeError::Update("Error serializing update data".to_string()))?;
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+            .map_err(|_| DataObjectError::Update("Error serializing update data".to_string()))?;
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::options()
             .append(true)
             .open(data_file_name)
             .await
             .map_err(|er| {
                 error!("Error: {:?}", er);
-                SerializeError::Serialize("Error opening data file".to_string())
+                DataObjectError::Serialize("Error opening data file".to_string())
             })?; // Data file
                  // should be available at this point
         let data_len = data.len();
@@ -331,7 +373,7 @@ impl NoSqlDataObject {
         // Inactivate the old data
         old_data.active = false;
         let old_serialized = bincode::serialize(&old_data)
-            .map_err(|_| SerializeError::Update("Error serializing old data".to_string()))?;
+            .map_err(|_| DataObjectError::Update("Error serializing old data".to_string()))?;
         self.seek_and_write(file, position, old_serialized).await?; //#FIXME: We should rollback the data if this fails
         Ok(IndexId {
             position,
@@ -342,8 +384,8 @@ impl NoSqlDataObject {
     async fn delete_records(
         &self,
         index_ids: Vec<&IndexId>,
-    ) -> Result<Vec<(InsertData, IndexId)>, SerializeError> {
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+    ) -> Result<Vec<(InsertData, IndexId)>, DataObjectError> {
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::open(data_file_name).await;
         let mut deleted_data = vec![];
         match file {
@@ -359,7 +401,7 @@ impl NoSqlDataObject {
                         Ok(mut data_object) => {
                             data_object.active = false;
                             let data = bincode::serialize(&data_object).map_err(|_| {
-                                SerializeError::Delete("Error serializing data".to_string())
+                                DataObjectError::Delete("Error serializing data".to_string())
                             })?;
                             self.seek_and_write(
                                 file.try_clone().await.unwrap(),
@@ -371,7 +413,7 @@ impl NoSqlDataObject {
                         }
                         Err(e) => {
                             error!("Error: {:?}", e);
-                            return Err(SerializeError::Deserialize(
+                            return Err(DataObjectError::Deserialize(
                                 "Error deserializing data".to_string(),
                             ));
                         }
@@ -381,15 +423,15 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Update(
+                Err(DataObjectError::Update(
                     "Error opening data file".to_string(),
                 ))
             }
         }
     }
 
-    async fn delete_record(&self, index_id: &IndexId) -> Result<(), SerializeError> {
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+    async fn delete_record(&self, index_id: &IndexId) -> Result<(), DataObjectError> {
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::open(data_file_name).await;
         match file {
             Ok(mut file) => {
@@ -401,14 +443,14 @@ impl NoSqlDataObject {
                     Ok(mut data_object) => {
                         data_object.active = false;
                         let data = bincode::serialize(&data_object).map_err(|_| {
-                            SerializeError::Delete("Error serializing data".to_string())
+                            DataObjectError::Delete("Error serializing data".to_string())
                         })?;
                         self.seek_and_write(file, index_id.position, data).await?;
                         Ok(())
                     }
                     Err(e) => {
                         error!("Error: {:?}", e);
-                        Err(SerializeError::Deserialize(
+                        Err(DataObjectError::Deserialize(
                             "Error deserializing data".to_string(),
                         ))
                     }
@@ -416,7 +458,7 @@ impl NoSqlDataObject {
             }
             Err(e) => {
                 error!("Error: {:?}", e);
-                Err(SerializeError::Update(
+                Err(DataObjectError::Update(
                     "Error opening data file".to_string(),
                 ))
             }
@@ -427,7 +469,7 @@ impl NoSqlDataObject {
         &self,
         mut file: File,
         data: Vec<u8>,
-    ) -> Result<(u64, File), SerializeError> {
+    ) -> Result<(u64, File), DataObjectError> {
         let position = file.seek(SeekFrom::End(0)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
         file.write_all(&data).await.unwrap();
@@ -440,7 +482,7 @@ impl NoSqlDataObject {
         mut file: File,
         position: u64,
         data: Vec<u8>,
-    ) -> Result<u64, SerializeError> {
+    ) -> Result<u64, DataObjectError> {
         let position = file.seek(SeekFrom::Start(position)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
         file.write_all(&data).await.unwrap();
@@ -452,8 +494,8 @@ impl NoSqlDataObject {
         &self,
         position: u64,
         length: usize,
-    ) -> Result<Vec<u8>, SerializeError> {
-        let data_file_name = format!("{}/{}.dat", self.root, self.data_object);
+    ) -> Result<Vec<u8>, DataObjectError> {
+        let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let mut file = File::open(data_file_name).await.unwrap();
 
         file.seek(SeekFrom::Start(position)).await.unwrap();
@@ -492,7 +534,7 @@ mod test {
         let mut nosql_data_object = NoSqlDataObject {
             data_object: "test".to_string(),
             index: HashMap::new(),
-            root: root_dir,
+            root_path: root_dir,
         };
 
         let data = Data {

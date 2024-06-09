@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use serde::Serialize;
 
 use crate::{
-    data_object::NoSqlDataObject,
-    parser::{handle_message, InsertData, Query},
+    data_object::{self, NoSqlDataObject},
+    parser::{handle_message, Definition, InsertData, Query},
 };
 
 pub struct NoSqlDatabase {
     data_objects: HashMap<String, NoSqlDataObject>,
     data_base: String,
+    root_path: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -19,21 +20,29 @@ struct Response {
 }
 
 impl NoSqlDatabase {
+
+    pub fn new(data_base: String, root_path: String) -> Self {
+        NoSqlDatabase {
+            data_objects: HashMap::new(),
+            data_base,
+            root_path,
+        }
+    }
+
     pub async fn handle_message(&mut self, message: &str) -> Response {
         let message = handle_message(&self.data_base, message);
         match message {
             Ok(message) => match message {
                 crate::parser::Command::Select(query) => self.handle_query(query).await,
-                crate::parser::Command::Insert(insert_data) => {
-                    self.handle_insert(insert_data).await
-                }
-                crate::parser::Command::Update(insert_data, query) => {
-                    self.handle_update(insert_data, query).await
-                }
-                crate::parser::Command::Delete(delete_query) => {
-                    self.handle_delete(delete_query).await
-                }
-                crate::parser::Command::Create => todo!(),
+                crate::parser::Command::Insert(insert_data) => self.handle_insert(insert_data).await,
+                crate::parser::Command::Update(insert_data, query) => self.handle_update(insert_data, query).await,
+                crate::parser::Command::Delete(delete_query) => self.handle_delete(delete_query).await,
+                crate::parser::Command::Create => {
+                    Response {
+                        data: None,
+                        error: Some("Something went wrong, create should not come here ".to_string()),
+                    }
+                },
                 crate::parser::Command::Define(table, definition) => todo!(),
                 crate::parser::Command::Alter => todo!(),
                 crate::parser::Command::Drop => todo!(),
@@ -45,15 +54,27 @@ impl NoSqlDatabase {
         }
     }
 
-
-    async fn handle_definition(&mut self, table: String, definition: String) -> Response {
-        let data_object = NoSqlDataObject::new(&table, definition);
-        self.data_objects.insert(table, data_object);
-        Response {
-            data: None,
-            error: None,
+    async fn handle_definition(&mut self, table: String, definition: HashMap<String,Definition>)-> Response {
+        let data_object = NoSqlDataObject::new(&table,self.root_path.as_str(), definition);
+        match data_object {
+            Ok(data_object) => {
+                self.data_objects.insert(table, data_object);
+                Response {
+                    data: None,
+                    error: None,
+                }
+            },
+            Err(err) => {
+                Response {
+                    data: None,
+                    error: Some(format!("Error creating table: {}", err)),
+                }
+            },
         }
+        
     }
+
+    
 
     async fn handle_delete(&mut self, delete_query: Query) -> Response {
         let table = delete_query.table_name.as_str();
