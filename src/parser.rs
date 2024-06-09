@@ -941,7 +941,7 @@ mod tests {
     #[test]
     fn test_parse_delete_command() {
         let db = "db";
-                            //SELECT       user WHERE id = '123' and name = 'John' and age >= 30
+        //SELECT       user WHERE id = '123' and name = 'John' and age >= 30
         let message = r#"DELETE FROM user WHERE id = '123' AND (name = 'John' OR age >= 30)"#;
         if let Command::Delete(query) = parse_delete_command(db, message).unwrap() {
             match query.filter {

@@ -1,5 +1,6 @@
 use std::{
     collections::{btree_map::Range, BTreeMap},
+    fmt::Display,
     ops::RangeBounds,
 };
 
@@ -15,6 +16,16 @@ pub enum IndexError {
     FileError(std::io::Error),
     Load(String),
     Save(String),
+}
+
+impl Display for IndexError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexError::FileError(e) => write!(f, "File Error: {}", e),
+            IndexError::Load(e) => write!(f, "Load Error: {}", e),
+            IndexError::Save(e) => write!(f, "Save Error: {}", e),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]

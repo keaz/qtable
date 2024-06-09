@@ -57,51 +57,66 @@ impl Display for DataObjectError {
 }
 
 impl NoSqlDataObject {
-    pub async fn new(data_object: &str, root: &str, definition: HashMap<String,Definition>) -> Result<Self,DataObjectError> {
+    pub async fn new(
+        data_object: &str,
+        root: &str,
+        definition: HashMap<String, Definition>,
+    ) -> Result<Self, DataObjectError> {
         let root_path = format!("{}/{}", root, data_object);
-        
+
         let index_path = format!("{}/{}/{}", root, data_object, INDEX_FOLDER);
-        let data_path = format!("{}/{}/{}", root, data_object, DATA_FOLDER);
         //create root_path folder and other subfolders
-        let _ = fs::create_dir_all(&root_path).await.map_err(|e| DataObjectError::Create(format!("Error creating root path: {}", e)))?;
-        let _ = fs::create_dir_all(&index_path).await.map_err(|e| DataObjectError::Create(format!("Error creating index path: {}", e)))?;
-        let _ = fs::create_dir_all(&data_path).await.map_err(|e| DataObjectError::Create(format!("Error creating data path: {}", e)))?;
+        fs::create_dir_all(&root_path)
+            .await
+            .map_err(|e| DataObjectError::Create(format!("Error creating root path: {}", e)))?;
+        fs::create_dir_all(&index_path)
+            .await
+            .map_err(|e| DataObjectError::Create(format!("Error creating index path: {}", e)))?;
 
-        create_def(data_object, &definition).await?;
+        create_def(&root_path, data_object, &definition).await?;
+        create_data_file(&root_path, data_object).await?;
 
-        let mut index = HashMap::new();
+        let mut indices = HashMap::new();
         for (attribute, def) in definition {
-            
-            let _ = fs::create_dir(def_file).await.map_err(|e| DataObjectError::Create(format!("Error creating definition file: {}", e)))?;
-
-            let data_file = format!("{}/{}.dat", data_path, attribute);
             if def.indexed {
-                let index_file = format!("{}/{}.idx", index_path, attribute);
+                let index = Index::new(&attribute, &index_path)
+                    .await
+                    .map_err(|e| DataObjectError::Create(format!("Error creating index: {}", e)))?;
+                indices.insert(attribute, index);
             }
-            
         }
 
         Ok(NoSqlDataObject {
             data_object: data_object.to_string(),
-            index: HashMap::new(),
+            index: indices,
             root_path: format!("{}/{}", root, data_object),
         })
     }
-    
 }
 
-async fn create_data_file(root_path:&str,data_object: &str) -> Result<(), DataObjectError> {
+async fn create_data_file(root_path: &str, data_object: &str) -> Result<(), DataObjectError> {
     let data_file = format!("{}/{}.dat", root_path, data_object);
-    //let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
-    let _ = File::create(data_file).await.map_err(|e| DataObjectError::Create(format!("Error creating data file: {}", e)))?;
+    let _ = File::create(data_file)
+        .await
+        .map_err(|e| DataObjectError::Create(format!("Error creating data file: {}", e)))?;
     Ok(())
 }
 
-async fn create_def(data_object: &str, definition: &HashMap<String, Definition>) -> Result<(), DataObjectError> {
-    let def_file = format!("{}/{}", data_object, DEF_FILE);
-    let mut def_file = File::create(def_file).await.map_err(|e| DataObjectError::Create(format!("Error creating definition file: {}", e)))?;
-    let def = bincode::serialize(definition).map_err(|e| DataObjectError::Serialize(format!("Error serializing definition: {}", e)))?;
-    def_file.write_all(&def).await.map_err(|e| DataObjectError::Create(format!("Error writing definition file: {}", e)))?;
+async fn create_def(
+    root_path: &str,
+    data_object: &str,
+    definition: &HashMap<String, Definition>,
+) -> Result<(), DataObjectError> {
+    let def_file = format!("{}/{}{}", root_path, data_object, DEF_FILE);
+    let mut def_file = File::create(def_file)
+        .await
+        .map_err(|e| DataObjectError::Create(format!("Error creating definition file: {}", e)))?;
+    let def = bincode::serialize(definition)
+        .map_err(|e| DataObjectError::Serialize(format!("Error serializing definition: {}", e)))?;
+    def_file
+        .write_all(&def)
+        .await
+        .map_err(|e| DataObjectError::Create(format!("Error writing definition file: {}", e)))?;
     Ok(())
 }
 
@@ -514,7 +529,37 @@ mod test {
     use tempfile::Builder;
 
     #[tokio::test]
-    async fn test_insert() {
+    async fn test_create_data_object() {
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+
+        let path = dir.path();
+        fs::create_dir_all(path).await.unwrap();
+
+        let root_dir = path.to_str().unwrap().to_string();
+
+        let mut definitions = HashMap::new();
+        let definition = Definition {
+            data_type: "String".to_string(),
+            indexed: true,
+            optional: true,
+        };
+        definitions.insert("name".to_string(), definition);
+        let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
+        assert!(nosql_data_object.is_ok());
+        assert!(path.join("test").exists());
+        assert!(path.join("test").join("idx").exists());
+        assert!(path.join("test").join("idx").join("name.idx").exists());
+
+        let data_object = nosql_data_object.unwrap();
+        assert_eq!(data_object.index.len(), 1);
+        assert_eq!(data_object.data_object, "test".to_string());
+    }
+
+    #[tokio::test]
+    async fn test_data_operations() {
         let dir = Builder::new()
             .prefix("data")
             .tempdir()
@@ -531,7 +576,7 @@ mod test {
             .unwrap()
             .to_string();
 
-        let mut nosql_data_object = NoSqlDataObject {
+        let nosql_data_object = NoSqlDataObject {
             data_object: "test".to_string(),
             index: HashMap::new(),
             root_path: root_dir,
