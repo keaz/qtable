@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path};
 use nom::Err;
 use serde::Serialize;
 use tokio::fs;
+use walkdir::WalkDir;
 
 use crate::{
     data_object::{self, NoSqlDataObject},
@@ -22,8 +23,7 @@ struct Response {
 }
 
 impl NoSqlDatabase {
-    pub async fn new(data_dir: String, data_path: String) -> Result<Self,String> {
-
+    pub async fn new(data_dir: String, data_path: String) -> Result<Self, String> {
         let root_path = format!("{}/{}", data_path, data_dir);
         let path = Path::new(root_path.as_str());
         if path.exists() {
@@ -38,14 +38,41 @@ impl NoSqlDatabase {
         })
     }
 
-    pub async fn load(root_dir: &str) -> Result<Self, String> {
-        let path = Path::new(root_dir);
+    async fn load(root_dir: &str, database: &str) -> Result<Self, String> {
+        let path = Path::new(root_dir).join(database);
         if !path.exists() {
             return Err(format!("Database {} does not exist", root_dir));
         }
 
         let mut data_objects = HashMap::new();
-        
+        for entry in WalkDir::new(path) {
+            let entry = entry.unwrap();
+            if entry.file_type().is_dir() {
+                let table = entry.file_name().to_str().unwrap().to_string();
+                let data_object = NoSqlDataObject::load(&table, root_dir).await.unwrap();
+                data_objects.insert(table, data_object);
+            }
+        }
+
+        Ok(NoSqlDatabase {
+            data_objects,
+            data_base: database.to_string(),
+            root_path: root_dir.to_string(),
+        })
+    }
+
+    pub async fn load_databases(root_dir: &str) -> Result<HashMap<String,Self>, String> {
+        let mut databases = HashMap::new();
+        for entry in WalkDir::new(root_dir) {
+            let entry = entry.unwrap();
+            if entry.file_type().is_dir() {
+                let database = entry.file_name().to_str().unwrap().to_string();
+                let database = NoSqlDatabase::load(root_dir, &database).await.unwrap();
+                databases.insert(database.data_base.clone(), database);
+            }
+        }
+
+        Ok(databases)
     }
 
     pub async fn handle_message(&mut self, message: &str) -> Response {

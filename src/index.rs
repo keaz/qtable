@@ -40,7 +40,7 @@ pub struct Index {
 }
 
 impl Index {
-    pub async fn new(attribute: &str, parent_path: &str) -> Result<Self, IndexError> {
+    pub async fn new_or_load(attribute: &str, parent_path: &str) -> Result<Self, IndexError> {
         let index_file = format!("{}/{}.idx", parent_path, attribute);
         if tokio::fs::metadata(&index_file).await.is_err() {
             // Index file does not exist yet so we create it

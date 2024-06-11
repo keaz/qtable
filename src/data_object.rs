@@ -79,7 +79,7 @@ impl NoSqlDataObject {
         let mut indices = HashMap::new();
         for (attribute, def) in definition {
             if def.indexed {
-                let index = Index::new(&attribute, &index_path)
+                let index = Index::new_or_load(&attribute, &index_path)
                     .await
                     .map_err(|e| DataObjectError::Create(format!("Error creating index: {}", e)))?;
                 indices.insert(attribute, index);
@@ -90,6 +90,32 @@ impl NoSqlDataObject {
             data_object: data_object.to_string(),
             index: indices,
             root_path: format!("{}/{}", root, data_object),
+        })
+    }
+
+    pub async fn load(data_object: &str, root: &str) -> Result<Self, DataObjectError> {
+        let root_path = format!("{}/{}", root, data_object);
+        let index_path = format!("{}/{}/{}", root, data_object, INDEX_FOLDER);
+        let def_file = format!("{}/{}{}", root_path, data_object, DEF_FILE);
+        let def = fs::read(def_file).await.map_err(|e| {
+            DataObjectError::Create(format!("Error reading definition file: {}", e))
+        })?;
+        let definition: HashMap<String, Definition> = bincode::deserialize(&def).map_err(|e| {
+            DataObjectError::Deserialize(format!("Error deserializing definition: {}", e))
+        })?;
+        let mut indices = HashMap::new();
+        for (attribute, def) in definition {
+            if def.indexed {
+                let index = Index::new_or_load(&attribute, &index_path)
+                    .await
+                    .map_err(|e| DataObjectError::Create(format!("Error loading index: {}", e)))?;
+                indices.insert(attribute, index);
+            }
+        }
+        Ok(NoSqlDataObject {
+            data_object: data_object.to_string(),
+            index: indices,
+            root_path,
         })
     }
 }
