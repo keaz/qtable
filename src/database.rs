@@ -1,6 +1,8 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::Path};
 
+use nom::Err;
 use serde::Serialize;
+use tokio::fs;
 
 use crate::{
     data_object::{self, NoSqlDataObject},
@@ -20,12 +22,30 @@ struct Response {
 }
 
 impl NoSqlDatabase {
-    pub fn new(data_base: String, root_path: String) -> Self {
-        NoSqlDatabase {
-            data_objects: HashMap::new(),
-            data_base,
-            root_path,
+    pub async fn new(data_dir: String, data_path: String) -> Result<Self,String> {
+
+        let root_path = format!("{}/{}", data_path, data_dir);
+        let path = Path::new(root_path.as_str());
+        if path.exists() {
+            return Err(format!("Database {} already exists", data_dir));
         }
+        fs::create_dir_all(root_path.as_str()).await.unwrap();
+
+        Ok(NoSqlDatabase {
+            data_objects: HashMap::new(),
+            data_base: data_dir,
+            root_path,
+        })
+    }
+
+    pub async fn load(root_dir: &str) -> Result<Self, String> {
+        let path = Path::new(root_dir);
+        if !path.exists() {
+            return Err(format!("Database {} does not exist", root_dir));
+        }
+
+        let mut data_objects = HashMap::new();
+        
     }
 
     pub async fn handle_message(&mut self, message: &str) -> Response {
@@ -42,11 +62,13 @@ impl NoSqlDatabase {
                 crate::parser::Command::Delete(delete_query) => {
                     self.handle_delete(delete_query).await
                 }
-                crate::parser::Command::Create => Response {
+                crate::parser::Command::Create(_) => Response {
                     data: None,
                     error: Some("Something went wrong, create should not come here ".to_string()),
                 },
-                crate::parser::Command::Define(table, definition) => todo!(),
+                crate::parser::Command::Define(table, definition) => {
+                    self.handle_definition(table, definition).await
+                }
                 crate::parser::Command::Alter => todo!(),
                 crate::parser::Command::Drop => todo!(),
             },

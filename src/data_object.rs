@@ -541,17 +541,26 @@ mod test {
         let root_dir = path.to_str().unwrap().to_string();
 
         let mut definitions = HashMap::new();
-        let definition = Definition {
+        let name_definition = Definition {
             data_type: "String".to_string(),
             indexed: true,
             optional: true,
         };
-        definitions.insert("name".to_string(), definition);
+
+        let age_definition = Definition {
+            data_type: "Number".to_string(),
+            indexed: false,
+            optional: true,
+        };
+
+        definitions.insert("name".to_string(), name_definition);
+        definitions.insert("age".to_string(), age_definition);
         let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
         assert!(nosql_data_object.is_ok());
         assert!(path.join("test").exists());
         assert!(path.join("test").join("idx").exists());
         assert!(path.join("test").join("idx").join("name.idx").exists());
+        assert!(!path.join("test").join("idx").join("age.idx").exists());
 
         let data_object = nosql_data_object.unwrap();
         assert_eq!(data_object.index.len(), 1);

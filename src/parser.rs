@@ -185,7 +185,7 @@ pub enum Command {
     Insert(InsertData),
     Update(InsertData, Query),
     Delete(Query),
-    Create,
+    Create(String),
     Define(String, HashMap<String, Definition>),
     Alter,
     Drop,
@@ -221,7 +221,7 @@ pub fn handle_message(db: &str, message: &str) -> Result<Command, SyntaxError> {
     } else if message.starts_with(DELETE) {
         parse_delete_command(db, message)
     } else if message.starts_with(CREATE) {
-        todo!("Create command");
+        parse_create_command(message)
     } else if message.starts_with(DEFINE) {
         parse_define_command(message)
     } else if message.starts_with(ALTER) {
@@ -247,6 +247,30 @@ fn extract_json(input: &str) -> IResult<&str, &str> {
 fn remove<'a>(input: &'a str, to_remove: &'a str) -> IResult<&'a str, &'a str> {
     let (input, _) = tag(to_remove)(input)?;
     multispace1(input)
+}
+
+fn parse_create_command(input: &str) -> Result<Command, SyntaxError> {
+    let input = match remove(input, CREATE) {
+        Ok((input, _)) => input,
+        Err(err) => {
+            error!("Error: {:?}", err);
+            return Err(SyntaxError::SyntaxError(
+                SyntaxErrorCode::InvalidValue,
+                format!("{}", err),
+            ));
+        }
+    };
+    let (_, database) = match extract_table_name(input) {
+        Ok((input, table_name)) => (input, table_name),
+        Err(err) => {
+            error!("Error: {:?}", err);
+            return Err(SyntaxError::ParseError(format!(
+                "Could not parse database name: {:?}",
+                err
+            )));
+        }
+    };
+    Ok(Command::Create(database.to_string()))
 }
 
 /// parse_define_command is a function that parses a define command and returns the document structure as a Command or a SyntaxError
