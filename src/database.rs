@@ -1,6 +1,5 @@
 use std::{collections::HashMap, path::Path};
 
-use nom::Err;
 use serde::Serialize;
 use tokio::fs;
 use walkdir::WalkDir;

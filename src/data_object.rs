@@ -12,7 +12,7 @@ use tokio::{
 };
 
 use crate::{
-    index::{Index, IndexId},
+    index::{new_or_load, Index, IndexId},
     parser::{Condition, Definition, InsertData, Query, WildCardOperations},
 };
 
@@ -23,7 +23,7 @@ const DATA_FOLDER: &str = "dat";
 
 pub struct NoSqlDataObject {
     data_object: String,
-    index: HashMap<String, Index>, // Attribute, Index
+    index: HashMap<String, Box<dyn Index>>, // Attribute, Index
     root_path: String,
 }
 
@@ -79,7 +79,7 @@ impl NoSqlDataObject {
         let mut indices = HashMap::new();
         for (attribute, def) in definition {
             if def.indexed {
-                let index = Index::new_or_load(&attribute, &index_path)
+                let index = new_or_load(&attribute, &index_path)
                     .await
                     .map_err(|e| DataObjectError::Create(format!("Error creating index: {}", e)))?;
                 indices.insert(attribute, index);
@@ -106,7 +106,7 @@ impl NoSqlDataObject {
         let mut indices = HashMap::new();
         for (attribute, def) in definition {
             if def.indexed {
-                let index = Index::new_or_load(&attribute, &index_path)
+                let index = new_or_load(&attribute, &index_path)
                     .await
                     .map_err(|e| DataObjectError::Create(format!("Error loading index: {}", e)))?;
                 indices.insert(attribute, index);
