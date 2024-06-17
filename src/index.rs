@@ -40,7 +40,7 @@ pub struct IndexId {
 }
 
 #[async_trait]
-pub trait Index {
+pub trait Index : Send + Sync {
     /// Get the object ids for a given key
     /// # Arguments
     /// * `key` - The key to look up

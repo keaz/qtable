@@ -20,7 +20,7 @@ const UPDATE: &str = "UPDATE";
 const DELETE: &str = "DELETE";
 
 // DDL
-const CREATE: &str = "CREATE";
+pub const CREATE: &str = "CREATE";
 const DEFINE: &str = "DEFINE"; // create structure
 const ALTER: &str = "ALTER";
 const DROP: &str = "DROP";
@@ -212,6 +212,7 @@ pub enum Command {
 pub fn handle_message(db: &str, message: &str) -> Result<Command, SyntaxError> {
     let message = message.trim();
 
+
     if message.starts_with(SELECT) {
         parse_select(db, message)
     } else if message.starts_with(INSERT) {
@@ -249,7 +250,22 @@ fn remove<'a>(input: &'a str, to_remove: &'a str) -> IResult<&'a str, &'a str> {
     multispace1(input)
 }
 
-fn parse_create_command(input: &str) -> Result<Command, SyntaxError> {
+// Creates a new database
+/// # Arguments
+/// * `input` - A string slice that contains the command
+/// # Example
+/// ```
+/// use crate::parse::{parse_create_command, Command, SyntaxError};
+/// let message = "CREATE federation";
+/// let result = parse_create_command(message);
+/// match result {
+///    Ok(Command::Create(database)) => {
+///       assert_eq!(database, "federation");
+///  }
+/// _ => panic!("Expected Create command"),
+/// }
+/// ```
+pub fn parse_create_command(input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, CREATE) {
         Ok((input, _)) => input,
         Err(err) => {

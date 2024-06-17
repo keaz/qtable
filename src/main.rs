@@ -1,12 +1,14 @@
-use database::NoSqlDatabase;
+use std::sync::Arc;
 
+use database::NoSqlDatabase;
+use tokio::sync::RwLock;
+
+mod config;
 mod data_object;
 mod database;
 mod index;
 mod network;
 mod parser;
-mod config;
-
 
 lazy_static::lazy_static! {
     static ref CONFIG: config::ServerConfig = config::ServerConfig::new().unwrap();
@@ -24,8 +26,10 @@ fn main() {
 
 async fn start() {
     let data_path = CONFIG.data_path.clone();
-    let server = network::server::Server::new(8080);
+    let port = CONFIG.port.unwrap_or(8080);
+    let server = network::server::Server::new(port);
     let databases = NoSqlDatabase::load_databases(&data_path).await.unwrap();
-    
-    server.run().await;
+    let databases = Arc::new(RwLock::new(databases));
+
+    server.run(data_path, databases.clone()).await;
 }

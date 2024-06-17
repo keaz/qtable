@@ -13,6 +13,7 @@ pub struct Cmd {
 #[derive(Debug, serde::Deserialize)]
 pub struct ServerConfig {
     pub data_path: String,
+    pub port: Option<u16>,
 }
 
 impl ServerConfig {

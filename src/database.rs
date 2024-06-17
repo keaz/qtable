@@ -22,18 +22,18 @@ struct Response {
 }
 
 impl NoSqlDatabase {
-    pub async fn new(data_dir: String, data_path: String) -> Result<Self, String> {
-        let root_path = format!("{}/{}", data_path, data_dir);
+    pub async fn new(data_base: &str, data_path: &str) -> Result<Self, String> {
+        let root_path = format!("{}/{}", data_path, data_base);
         let path = Path::new(root_path.as_str());
         if path.exists() {
-            return Err(format!("Database {} already exists", data_dir));
+            return Err(format!("Database {} already exists", data_base));
         }
         fs::create_dir_all(root_path.as_str()).await.unwrap();
 
         Ok(NoSqlDatabase {
             data_objects: HashMap::new(),
-            data_base: data_dir,
-            root_path,
+            data_base: data_base.to_string(),
+            root_path: data_path.to_string(),
         })
     }
 
@@ -44,8 +44,12 @@ impl NoSqlDatabase {
         }
 
         let mut data_objects = HashMap::new();
-        for entry in WalkDir::new(path) {
+        for entry in WalkDir::new(path.clone()) {
             let entry = entry.unwrap();
+            // skip the root path
+            if entry.path() == path {
+                continue;
+            }
             if entry.file_type().is_dir() {
                 let table = entry.file_name().to_str().unwrap().to_string();
                 let data_object = NoSqlDataObject::load(&table, root_dir).await.unwrap();
@@ -60,8 +64,11 @@ impl NoSqlDatabase {
         })
     }
 
-    pub async fn load_databases(root_dir: &str) -> Result<HashMap<String,Self>, String> {
+    pub async fn load_databases(root_dir: &str) -> Result<HashMap<String, Self>, String> {
         let mut databases = HashMap::new();
+        if !Path::new(root_dir).exists() {
+            return Ok(databases);
+        }
         for entry in WalkDir::new(root_dir) {
             let entry = entry.unwrap();
             if entry.file_type().is_dir() {
@@ -210,5 +217,46 @@ impl NoSqlDatabase {
             data: None,
             error: Some(format!("Table {} not found", query.table_name)),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+
+    use tempfile::Builder;
+
+    use super::*;
+    use crate::data_object::NoSqlDataObject;
+    use std::{collections::HashMap, fs::File};
+
+    #[tokio::test]
+    async fn test_new_database() {
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+
+        let _file = File::create(dir.path());
+        let root_dir = dir.path().to_str().unwrap();
+
+        let _ = NoSqlDatabase::new("test", root_dir).await.unwrap();
+        let database_path = dir.path().join("test");
+        assert!(database_path.exists());
+    }
+
+    #[tokio::test]
+    async fn test_load_database() {
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+
+        let _file = File::create(dir.path());
+        let root_dir = dir.path().to_str().unwrap();
+
+        let database = NoSqlDatabase::new("test", root_dir).await.unwrap();
+        let loaded_database = NoSqlDatabase::load(root_dir, "test").await.unwrap();
+        assert_eq!(database.data_base, loaded_database.data_base);
+        assert_eq!(database.root_path, loaded_database.root_path);
     }
 }
