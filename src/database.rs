@@ -66,11 +66,16 @@ impl NoSqlDatabase {
 
     pub async fn load_databases(root_dir: &str) -> Result<HashMap<String, Self>, String> {
         let mut databases = HashMap::new();
-        if !Path::new(root_dir).exists() {
+        let path = Path::new(root_dir);
+        if !path.exists() {
             return Ok(databases);
         }
-        for entry in WalkDir::new(root_dir) {
+        for entry in WalkDir::new(path) {
             let entry = entry.unwrap();
+            // skip the root path
+            if entry.path() == path {
+                continue;
+            }
             if entry.file_type().is_dir() {
                 let database = entry.file_name().to_str().unwrap().to_string();
                 let database = NoSqlDatabase::load(root_dir, &database).await.unwrap();

@@ -3,7 +3,7 @@ use std::{collections::HashMap, sync::Arc};
 use bincode::de;
 use log::{debug, error, info};
 use tokio::{
-    io::{AsyncReadExt, ReadHalf, WriteHalf},
+    io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
     sync::RwLock,
 };
@@ -60,15 +60,20 @@ impl Client {
                                 error!("Database {} is already exists", database_to_create);
                                 buffer.clear();
                                 //#TODO: Handle the error and send the response
+                                self.writer.write_all(b"Database already exists").await.unwrap();
                                 continue;
                             }
+                            drop(databases);
                             let new_database =
                                 NoSqlDatabase::new(&database_to_create, &self.data_path).await;
                             match new_database {
                                 Ok(database) => {
                                     let mut databases = self.databases.write().await;
+                                    debug!("Database {} created", database_to_create);
                                     databases.insert(database_to_create, database);
-                                    drop(databases);
+                                    buffer.clear();
+                                    self.writer.write_all(b"Database created").await.unwrap();
+                                    self.writer.flush().await.unwrap();
                                 }
                                 Err(error) => {
                                     error!("Failed to create databse {}", error);
