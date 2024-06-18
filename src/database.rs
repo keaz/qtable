@@ -21,6 +21,28 @@ struct Response {
     error: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+pub enum DataResponse {
+    Data(Vec<InsertData>),
+    Error(String),
+}
+
+impl ToString for DataResponse {
+    fn to_string(&self) -> String {
+        match self {
+            DataResponse::Data(data) => {
+                let mut data_string = String::new();
+                for d in data {
+                    data_string.push_str(&format!("{:?}", d));
+                    data_string.push_str("\n");
+                }
+                data_string
+            }
+            DataResponse::Error(err) => err.to_string(),
+        }
+    }
+}
+
 impl NoSqlDatabase {
     pub async fn new(data_base: &str, data_path: &str) -> Result<Self, String> {
         let root_path = format!("{}/{}", data_path, data_base);
@@ -40,11 +62,11 @@ impl NoSqlDatabase {
     async fn load(root_dir: &str, database: &str) -> Result<Self, String> {
         let path = Path::new(root_dir).join(database);
         if !path.exists() {
-            return Err(format!("Database {} does not exist", root_dir));
+            return Err(format!("Database {} does not exist", path.to_str().unwrap()));
         }
 
         let mut data_objects = HashMap::new();
-        for entry in WalkDir::new(path.clone()) {
+        for entry in WalkDir::new(path.clone()).max_depth(1) {
             let entry = entry.unwrap();
             // skip the root path
             if entry.path() == path {
@@ -52,7 +74,7 @@ impl NoSqlDatabase {
             }
             if entry.file_type().is_dir() {
                 let table = entry.file_name().to_str().unwrap().to_string();
-                let data_object = NoSqlDataObject::load(&table, root_dir).await.unwrap();
+                let data_object = NoSqlDataObject::load(&table, path.to_str().unwrap()).await.unwrap();
                 data_objects.insert(table, data_object);
             }
         }
@@ -70,7 +92,7 @@ impl NoSqlDatabase {
         if !path.exists() {
             return Ok(databases);
         }
-        for entry in WalkDir::new(path) {
+        for entry in WalkDir::new(path).max_depth(1) {
             let entry = entry.unwrap();
             // skip the root path
             if entry.path() == path {
@@ -86,7 +108,7 @@ impl NoSqlDatabase {
         Ok(databases)
     }
 
-    pub async fn handle_message(&mut self, message: &str) -> Response {
+    pub async fn handle_message(&mut self, message: &str) -> DataResponse {
         let message = handle_message(&self.data_base, message);
         match message {
             Ok(message) => match message {
@@ -100,128 +122,82 @@ impl NoSqlDatabase {
                 crate::parser::Command::Delete(delete_query) => {
                     self.handle_delete(delete_query).await
                 }
-                crate::parser::Command::Create(_) => Response {
-                    data: None,
-                    error: Some("Something went wrong, create should not come here ".to_string()),
-                },
-                crate::parser::Command::Define(table, definition) => {
+                crate::parser::Command::Create(_) => DataResponse::Error(
+                    "Something went wrong, create should not come here ".to_string(),
+                ),
+                crate::parser::Command::Define(_,table, definition) => {
                     self.handle_definition(table, definition).await
                 }
                 crate::parser::Command::Alter => todo!(),
                 crate::parser::Command::Drop => todo!(),
             },
-            Err(e) => Response {
-                data: None,
-                error: Some(format!("Error parsing message: {}", e)),
-            },
+            Err(e) => DataResponse::Error(format!("Error parsing message: {}", e)),
         }
     }
 
-    async fn handle_definition(
+    pub async fn handle_definition(
         &mut self,
         table: String,
         definition: HashMap<String, Definition>,
-    ) -> Response {
-        let data_object = NoSqlDataObject::new(&table, self.root_path.as_str(), definition).await;
+    ) -> DataResponse {
+        let data_object = NoSqlDataObject::new(&table, format!("{}/{}",self.root_path,self.data_base).as_str(), definition).await;
         match data_object {
             Ok(data_object) => {
                 self.data_objects.insert(table, data_object);
-                Response {
-                    data: None,
-                    error: None,
-                }
+                DataResponse::Data(vec![])
             }
-            Err(err) => Response {
-                data: None,
-                error: Some(format!("Error creating table: {}", err)),
-            },
+            Err(err) => DataResponse::Error(format!("Error creating table: {}", err)),
         }
     }
 
-    async fn handle_delete(&mut self, delete_query: Query) -> Response {
+    pub async fn handle_delete(&mut self, delete_query: Query) -> DataResponse {
         let table = delete_query.table_name.as_str();
         if let Some(data_object) = self.data_objects.get_mut(table) {
             let result = data_object.handle_delete(&delete_query).await;
             match result {
-                Ok(_) => Response {
-                    data: None,
-                    error: None,
-                },
-                Err(e) => Response {
-                    data: None,
-                    error: Some(format!("Error deleting data: {}", e)),
-                },
+                Ok(_) => DataResponse::Data(vec![]),
+                Err(e) => DataResponse::Error(format!("Error deleting data: {}", e)),
             }
         } else {
-            Response {
-                data: None,
-                error: Some(format!("Table {} not found", table)),
-            }
+            DataResponse::Error(format!("Table {} not found", table))
         }
     }
 
-    async fn handle_update(&mut self, update_data: InsertData, query: Query) -> Response {
+    pub async fn handle_update(&mut self, update_data: InsertData, query: Query) -> DataResponse {
         let table = update_data.table.as_str();
         if let Some(data_object) = self.data_objects.get_mut(&update_data.table) {
             let result = data_object.handle_update(&update_data, query).await;
             match result {
-                Ok(_) => Response {
-                    data: Some(vec![update_data]),
-                    error: None,
-                },
-                Err(e) => Response {
-                    data: None,
-                    error: Some(format!("Error updating data: {}", e)),
-                },
+                Ok(_) => DataResponse::Data(vec![update_data]),
+                Err(e) => DataResponse::Error(format!("Error updating data: {}", e)),
             }
         } else {
-            Response {
-                data: None,
-                error: Some(format!("Table {} not found", table)),
-            }
+            DataResponse::Error(format!("Table {} not found", table))
         }
     }
 
-    async fn handle_insert(&mut self, insert_data: InsertData) -> Response {
+    pub async fn handle_insert(&mut self, insert_data: InsertData) -> DataResponse {
         let table = insert_data.table.as_str();
         if let Some(data_object) = self.data_objects.get_mut(&insert_data.table) {
             let result = data_object.handle_insert(&insert_data).await;
             match result {
-                Ok(_) => Response {
-                    data: Some(vec![insert_data]),
-                    error: None,
-                },
-                Err(e) => Response {
-                    data: None,
-                    error: Some(format!("Error inserting data: {}", e)),
-                },
+                Ok(_) => DataResponse::Data(vec![insert_data]),
+                Err(e) => DataResponse::Error(format!("Error inserting data: {}", e)),
             }
         } else {
-            Response {
-                data: None,
-                error: Some(format!("Table {} not found", table)),
-            }
+            DataResponse::Error(format!("Table {} not found", table))
         }
     }
 
-    async fn handle_query(&self, query: Query) -> Response {
+    pub async fn handle_query(&self, query: Query) -> DataResponse {
         if let Some(data_object) = self.data_objects.get(&query.table_name) {
             let query_data = data_object.handle_query(&query.filter).await;
             match query_data {
-                Ok(data) => Response {
-                    data: Some(data),
-                    error: None,
-                },
-                Err(e) => Response {
-                    data: None,
-                    error: Some(format!("Error querying data: {}", e)),
-                },
+                Ok(data) => DataResponse::Data(data),
+                Err(e) => DataResponse::Error(format!("Error Quering data {}", e)),
             };
         }
-        Response {
-            data: None,
-            error: Some(format!("Table {} not found", query.table_name)),
-        }
+        DataResponse::Error(format!("Table {} not found", query.table_name))
     }
 }
 

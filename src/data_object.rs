@@ -75,6 +75,7 @@ impl NoSqlDataObject {
 
         create_def(&root_path, data_object, &definition).await?;
         create_data_file(&root_path, data_object).await?;
+        create_object_id_idx(&index_path).await?;
 
         let mut indices = HashMap::new();
         for (attribute, def) in definition {
@@ -112,12 +113,25 @@ impl NoSqlDataObject {
                 indices.insert(attribute, index);
             }
         }
+        let object_id_idx = new_or_load(OBJECT_ID, &index_path)
+            .await
+            .map_err(|e| DataObjectError::Create(format!("Error loading object id index: {}", e)))?;
+        indices.insert(OBJECT_ID.to_string(), object_id_idx);
+        
         Ok(NoSqlDataObject {
             data_object: data_object.to_string(),
             index: indices,
             root_path,
         })
     }
+}
+
+async fn create_object_id_idx(index_path: &str) -> Result<(), DataObjectError> {
+    let object_id_idx = format!("{}/{}.idx", index_path, OBJECT_ID);
+    let _ = File::create(object_id_idx)
+        .await
+        .map_err(|e| DataObjectError::Create(format!("Error creating object id index: {}", e)))?;
+    Ok(())
 }
 
 async fn create_data_file(root_path: &str, data_object: &str) -> Result<(), DataObjectError> {
@@ -242,7 +256,7 @@ impl NoSqlDataObject {
 
     pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), DataObjectError> {
         let index_id = self.insert_record(insert_data).await?;
-        self.add_to_index(OBJECT_ID, &insert_data.data_object_id, &index_id); //# FIXME: should add other attributes to the index considering the definition
+        self.add_to_index(OBJECT_ID, &insert_data.db, &index_id); //# FIXME: should add other attributes to the index considering the definition
         Ok(())
     }
 
@@ -259,7 +273,7 @@ impl NoSqlDataObject {
         let new_index_id = self
             .update_record(index_id.position, index_id.length, &update_data)
             .await?;
-        self.add_to_index(OBJECT_ID, &update_data.data_object_id, &new_index_id);
+        self.add_to_index(OBJECT_ID, &update_data.db, &new_index_id);
         Ok(())
     }
 
@@ -270,7 +284,7 @@ impl NoSqlDataObject {
         }
         let deleted_data = self.delete_records(index_ids).await?;
         for (deleted_data, index_id) in deleted_data {
-            self.remove_from_index(OBJECT_ID, &deleted_data.data_object_id, &index_id);
+            self.remove_from_index(OBJECT_ID, &deleted_data.db, &index_id);
         }
         Ok(())
     }
@@ -624,7 +638,7 @@ mod test {
         let data_object = DataObject::Object(vec![data]);
         let object_id = uuid::Uuid::new_v4().to_string();
         let insert_data = InsertData {
-            data_object_id: object_id.clone(),
+            db: object_id.clone(),
             table: "test".to_string(),
             data: data_object,
             active: true,
@@ -649,7 +663,7 @@ mod test {
 
         let data_object = DataObject::Object(vec![data]);
         let update_data = InsertData {
-            data_object_id: object_id,
+            db: object_id,
             table: "test".to_string(),
             data: data_object,
             active: true,

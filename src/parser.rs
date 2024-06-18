@@ -170,7 +170,7 @@ pub struct Query {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InsertData {
-    pub data_object_id: String,
+    pub db: String,
     pub table: String,
     pub data: DataObject,
     pub active: bool,
@@ -186,7 +186,7 @@ pub enum Command {
     Update(InsertData, Query),
     Delete(Query),
     Create(String),
-    Define(String, HashMap<String, Definition>),
+    Define(String,String, HashMap<String, Definition>),
     Alter,
     Drop,
 }
@@ -212,7 +212,6 @@ pub enum Command {
 pub fn handle_message(db: &str, message: &str) -> Result<Command, SyntaxError> {
     let message = message.trim();
 
-
     if message.starts_with(SELECT) {
         parse_select(db, message)
     } else if message.starts_with(INSERT) {
@@ -224,7 +223,7 @@ pub fn handle_message(db: &str, message: &str) -> Result<Command, SyntaxError> {
     } else if message.starts_with(CREATE) {
         parse_create_command(message)
     } else if message.starts_with(DEFINE) {
-        parse_define_command(message)
+        parse_define_command(db,message)
     } else if message.starts_with(ALTER) {
         todo!("Alter command");
     } else if message.starts_with(DROP) {
@@ -306,7 +305,7 @@ pub fn parse_create_command(input: &str) -> Result<Command, SyntaxError> {
 ///   _ => panic!("Expected Define command"),
 /// }
 /// ```
-fn parse_define_command(input: &str) -> Result<Command, SyntaxError> {
+fn parse_define_command(db: &str,input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, DEFINE) {
         Ok((input, _)) => input,
         Err(err) => {
@@ -400,7 +399,7 @@ fn parse_define_command(input: &str) -> Result<Command, SyntaxError> {
                     };
                     define.insert(key.to_string(), definition);
                 }
-                Ok(Command::Define(table_name.to_string(), define))
+                Ok(Command::Define(db.to_string(),table_name.to_string(), define))
             }
             _ => Err(SyntaxError::SyntaxError(
                 SyntaxErrorCode::InvalidValue,
@@ -516,7 +515,7 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     };
 
     let update_data = InsertData {
-        data_object_id: "".to_string(),
+        db: "".to_string(),
         table: table_name.to_string(),
         data: update_data,
         active: true,
@@ -678,7 +677,7 @@ fn parse_insert_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
 
     let (_id, table, data) = parse_json(json_str, table_name)?;
     let insert_data = InsertData {
-        data_object_id: db.to_string(),
+        db: db.to_string(),
         table: table.to_string(),
         data,
         active: true,
@@ -1033,9 +1032,9 @@ mod tests {
     #[test]
     fn test_parse_defile_command() {
         let message = r#"DEFINE user { "name": { "type": "String", "indexed": true, "optional": false }, "age": { "type": "Number", "indexed": false, "optional": true }}"#;
-        match parse_define_command(message) {
+        match parse_define_command("user",message) {
             Ok(command) => match command {
-                Command::Define(table, define) => {
+                Command::Define(db,table, define) => {
                     assert_eq!(table, "user");
                     assert_eq!(define.len(), 2);
                     assert!(define.contains_key("name"));

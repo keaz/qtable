@@ -1,7 +1,8 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bincode::de;
+use bincode::{de, serialize};
 use log::{debug, error, info};
+use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
@@ -10,7 +11,9 @@ use tokio::{
 
 use crate::{
     database::NoSqlDatabase,
-    parser::{handle_message, parse_create_command, Command, Query, CREATE},
+    parser::{
+        handle_message, parse_create_command, Command, Definition, InsertData, Query, CREATE,
+    },
 };
 
 pub struct Client {
@@ -60,7 +63,10 @@ impl Client {
                                 error!("Database {} is already exists", database_to_create);
                                 buffer.clear();
                                 //#TODO: Handle the error and send the response
-                                self.writer.write_all(b"Database already exists").await.unwrap();
+                                self.writer
+                                    .write_all(b"Database already exists")
+                                    .await
+                                    .unwrap();
                                 continue;
                             }
                             drop(databases);
@@ -103,16 +109,26 @@ impl Client {
             debug!("Command: {:?}", command);
             match command {
                 Ok(command) => match command {
-                    Command::Select(query) => todo!(),
-                    Command::Insert(insert_data) => todo!(),
-                    Command::Update(insert_data, query) => todo!(),
-                    Command::Delete(query) => todo!(),
+                    Command::Select(query) => {
+                        self.handle_select(query).await;
+                    }
+                    Command::Insert(insert_data) => {
+                        self.handle_insert(insert_data).await;
+                    }
+                    Command::Update(insert_data, query) => {
+                        self.handle_update(insert_data, query).await;
+                    }
+                    Command::Delete(query) => {
+                        self.handle_delete(query).await;
+                    }
                     Command::Create(_) => {
                         error!("Unexpected create command");
                         buffer.clear();
                         //#TODO: send  error response
                     }
-                    Command::Define(table, definitions) => todo!(),
+                    Command::Define(db,table, definitions) => {
+                        self.handle_definition(db,table, definitions).await;
+                    }
                     Command::Alter => todo!(),
                     Command::Drop => todo!(),
                 },
@@ -125,5 +141,80 @@ impl Client {
             buffer.clear();
         }
         info!("Connection closed")
+    }
+
+    async fn handle_definition(&mut self, db: String,table: String, definitions: HashMap<String, Definition>) {
+        let mut databases = self.databases.write().await;
+        let database = databases.get_mut(&db);
+        match database {
+            Some(database) => {
+                let response = database.handle_definition(table, definitions).await;
+                let response = serialize(&response).unwrap();
+                self.writer.write_all(&response).await.unwrap();
+            }
+            None => {
+                self.writer.write_all(b"No Records found").await.unwrap();
+            }
+        }
+    }
+
+    async fn handle_delete(&mut self, delete_query: Query) {
+        let mut databases = self.databases.write().await;
+        let database = databases.get_mut(&delete_query.db);
+        match database {
+            Some(database) => {
+                let response = database.handle_delete(delete_query).await;
+                let response = serialize(&response).unwrap();
+                self.writer.write_all(&response).await.unwrap();
+            }
+            None => {
+                self.writer.write_all(b"No Records found").await.unwrap();
+            }
+        }
+    }
+
+    async fn handle_update(&mut self, insert_data: InsertData, query: Query) {
+        let mut databases = self.databases.write().await;
+        let database = databases.get_mut(&insert_data.db);
+        match database {
+            Some(database) => {
+                let response = database.handle_update(insert_data, query).await;
+                let response = serialize(&response).unwrap();
+                self.writer.write_all(&response).await.unwrap();
+            }
+            None => {
+                self.writer.write_all(b"No Records found").await.unwrap();
+            }
+        }
+    }
+
+    async fn handle_insert(&mut self, insert_data: InsertData) {
+        let mut databases = self.databases.write().await;
+        let database = databases.get_mut(&insert_data.db);
+        match database {
+            Some(database) => {
+                let response = database.handle_insert(insert_data).await;
+                let response = serialize(&response).unwrap();
+                self.writer.write_all(&response).await.unwrap();
+            }
+            None => {
+                self.writer.write_all(b"No Records found").await.unwrap();
+            }
+        }
+    }
+
+    async fn handle_select(&mut self, query: Query) {
+        let databases = self.databases.read().await;
+        let database = databases.get(&query.db);
+        match database {
+            Some(database) => {
+                let response = database.handle_query(query).await;
+                let response = serialize(&response).unwrap();
+                self.writer.write_all(&response).await.unwrap();
+            }
+            None => {
+                self.writer.write_all(b"No Records found").await.unwrap();
+            }
+        }
     }
 }
