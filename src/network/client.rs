@@ -1,8 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
-use bincode::{de, serialize};
+use bincode::serialize;
 use log::{debug, error, info};
-use serde::Serialize;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, ReadHalf, WriteHalf},
     net::TcpStream,
@@ -113,21 +112,21 @@ impl Client {
                         self.handle_select(query).await;
                     }
                     Command::Insert(insert_data) => {
-                        self.handle_insert(insert_data).await;
+                        self.handle_insert(db,insert_data).await;
                     }
                     Command::Update(insert_data, query) => {
-                        self.handle_update(insert_data, query).await;
+                        self.handle_update(db,insert_data, query).await;
                     }
                     Command::Delete(query) => {
-                        self.handle_delete(query).await;
+                        self.handle_delete(db,query).await;
                     }
                     Command::Create(_) => {
                         error!("Unexpected create command");
                         buffer.clear();
                         //#TODO: send  error response
                     }
-                    Command::Define(db,table, definitions) => {
-                        self.handle_definition(db,table, definitions).await;
+                    Command::Define(db, table, definitions) => {
+                        self.handle_definition(db, table, definitions).await;
                     }
                     Command::Alter => todo!(),
                     Command::Drop => todo!(),
@@ -143,7 +142,12 @@ impl Client {
         info!("Connection closed")
     }
 
-    async fn handle_definition(&mut self, db: String,table: String, definitions: HashMap<String, Definition>) {
+    async fn handle_definition(
+        &mut self,
+        db: String,
+        table: String,
+        definitions: HashMap<String, Definition>,
+    ) {
         let mut databases = self.databases.write().await;
         let database = databases.get_mut(&db);
         match database {
@@ -158,9 +162,9 @@ impl Client {
         }
     }
 
-    async fn handle_delete(&mut self, delete_query: Query) {
+    async fn handle_delete(&mut self,db: &str, delete_query: Query) {
         let mut databases = self.databases.write().await;
-        let database = databases.get_mut(&delete_query.db);
+        let database = databases.get_mut(db);
         match database {
             Some(database) => {
                 let response = database.handle_delete(delete_query).await;
@@ -173,9 +177,9 @@ impl Client {
         }
     }
 
-    async fn handle_update(&mut self, insert_data: InsertData, query: Query) {
+    async fn handle_update(&mut self,db: &str, insert_data: InsertData, query: Query) {
         let mut databases = self.databases.write().await;
-        let database = databases.get_mut(&insert_data.db);
+        let database = databases.get_mut(db);
         match database {
             Some(database) => {
                 let response = database.handle_update(insert_data, query).await;
@@ -188,9 +192,9 @@ impl Client {
         }
     }
 
-    async fn handle_insert(&mut self, insert_data: InsertData) {
+    async fn handle_insert(&mut self,db: &str, insert_data: InsertData) {
         let mut databases = self.databases.write().await;
-        let database = databases.get_mut(&insert_data.db);
+        let database = databases.get_mut(db);
         match database {
             Some(database) => {
                 let response = database.handle_insert(insert_data).await;

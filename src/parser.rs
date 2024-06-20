@@ -170,7 +170,7 @@ pub struct Query {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct InsertData {
-    pub db: String,
+    pub object_id: String,
     pub table: String,
     pub data: DataObject,
     pub active: bool,
@@ -515,7 +515,7 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     };
 
     let update_data = InsertData {
-        db: "".to_string(),
+        object_id: "".to_string(),
         table: table_name.to_string(),
         data: update_data,
         active: true,
@@ -675,9 +675,9 @@ fn parse_insert_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    let (_id, table, data) = parse_json(json_str, table_name)?;
+    let (id, table, data) = parse_json(json_str, table_name)?;
     let insert_data = InsertData {
-        db: db.to_string(),
+        object_id: id,
         table: table.to_string(),
         data,
         active: true,
@@ -926,10 +926,10 @@ fn parse_value(input: &str) -> IResult<&str, String> {
     alt((
         delimited(
             char('\''),
-            take_while(|c: char| c.is_alphanumeric() || c == '_'),
+            take_while(|c: char| c.is_alphanumeric() || c == '_' || c == '-'),
             char('\''),
         ),
-        take_while1(|c: char| c.is_alphanumeric() || c == '_'),
+        take_while1(|c: char| c.is_alphanumeric() || c == '_' || c == '-'),
     ))(input)
     .map(|(next_input, res)| (next_input, res.to_string()))
 }
@@ -1071,7 +1071,7 @@ mod tests {
                             match *left {
                                 Condition::Equal(field, value) => {
                                     assert_eq!(field, "id");
-                                    assert_eq!(value, "123");
+                                    assert_eq!(value, "cf0aad38-3ea2-4930-ae70-cb92560d15d3");
                                 }
                                 _ => {
                                     panic!("Expected Equal operation");
@@ -1170,12 +1170,26 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_value_char() {
+    fn test_parse_value_john_char() {
         let input = r#"'John'"#;
         let result = parse_value(input);
         match result {
             Ok((_, value)) => {
                 assert_eq!(value, "John");
+            }
+            Err(e) => {
+                panic!("Expected value but got {:?}", e);
+            }
+        }
+    }
+
+    #[test]
+    fn test_parse_value_uuid_char() {
+        let input = r#"'cf0aad38-3ea2-4930-ae70-cb92560d15d3'"#;
+        let result = parse_value(input);
+        match result {
+            Ok((_, value)) => {
+                assert_eq!(value, "cf0aad38-3ea2-4930-ae70-cb92560d15d3");
             }
             Err(e) => {
                 panic!("Expected value but got {:?}", e);

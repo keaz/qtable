@@ -27,22 +27,6 @@ pub enum DataResponse {
     Error(String),
 }
 
-impl ToString for DataResponse {
-    fn to_string(&self) -> String {
-        match self {
-            DataResponse::Data(data) => {
-                let mut data_string = String::new();
-                for d in data {
-                    data_string.push_str(&format!("{:?}", d));
-                    data_string.push_str("\n");
-                }
-                data_string
-            }
-            DataResponse::Error(err) => err.to_string(),
-        }
-    }
-}
-
 impl NoSqlDatabase {
     pub async fn new(data_base: &str, data_path: &str) -> Result<Self, String> {
         let root_path = format!("{}/{}", data_path, data_base);
@@ -62,7 +46,10 @@ impl NoSqlDatabase {
     async fn load(root_dir: &str, database: &str) -> Result<Self, String> {
         let path = Path::new(root_dir).join(database);
         if !path.exists() {
-            return Err(format!("Database {} does not exist", path.to_str().unwrap()));
+            return Err(format!(
+                "Database {} does not exist",
+                path.to_str().unwrap()
+            ));
         }
 
         let mut data_objects = HashMap::new();
@@ -74,7 +61,9 @@ impl NoSqlDatabase {
             }
             if entry.file_type().is_dir() {
                 let table = entry.file_name().to_str().unwrap().to_string();
-                let data_object = NoSqlDataObject::load(&table, path.to_str().unwrap()).await.unwrap();
+                let data_object = NoSqlDataObject::load(&table, path.to_str().unwrap())
+                    .await
+                    .unwrap();
                 data_objects.insert(table, data_object);
             }
         }
@@ -125,7 +114,7 @@ impl NoSqlDatabase {
                 crate::parser::Command::Create(_) => DataResponse::Error(
                     "Something went wrong, create should not come here ".to_string(),
                 ),
-                crate::parser::Command::Define(_,table, definition) => {
+                crate::parser::Command::Define(_, table, definition) => {
                     self.handle_definition(table, definition).await
                 }
                 crate::parser::Command::Alter => todo!(),
@@ -140,7 +129,12 @@ impl NoSqlDatabase {
         table: String,
         definition: HashMap<String, Definition>,
     ) -> DataResponse {
-        let data_object = NoSqlDataObject::new(&table, format!("{}/{}",self.root_path,self.data_base).as_str(), definition).await;
+        let data_object = NoSqlDataObject::new(
+            &table,
+            format!("{}/{}", self.root_path, self.data_base).as_str(),
+            definition,
+        )
+        .await;
         match data_object {
             Ok(data_object) => {
                 self.data_objects.insert(table, data_object);
