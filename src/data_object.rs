@@ -610,11 +610,13 @@ mod test {
         assert!(path.join("test").exists());
         assert!(path.join("test").join("idx").exists());
         assert!(path.join("test").join("idx").join("name.idx").exists());
+        assert!(path.join("test").join("idx").join("object_id.idx").exists());
         assert!(!path.join("test").join("idx").join("age.idx").exists());
 
         let data_object = nosql_data_object.unwrap();
-        assert_eq!(data_object.index.len(), 1);
+        assert_eq!(data_object.index.len(), 2);
         assert_eq!(data_object.data_object, "test".to_string());
+        
     }
 
     #[tokio::test]

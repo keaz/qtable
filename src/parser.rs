@@ -1061,7 +1061,7 @@ mod tests {
 
     #[test]
     fn test_parse_select_command() {
-        let message = r#"SELECT user WHERE id = '123' AND (name = 'John' OR age >= 30)"#;
+        let message = r#"SELECT user WHERE id = 'cf0aad38-3ea2-4930-ae70-cb92560d15d3' AND (name = 'John' OR age >= 30)"#;
         match parse_select("db", message) {
             Ok(command) => match command {
                 Command::Select(query) => {
