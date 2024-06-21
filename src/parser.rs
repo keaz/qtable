@@ -37,7 +37,7 @@ const DROP: &str = "DROP";
 ///   value: DataType::String("test".to_string()),
 /// }]);
 /// ```
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum DataObject {
     String(String),
     Number(Number),
@@ -46,7 +46,24 @@ pub enum DataObject {
     Object(Vec<Data>),
 }
 
-#[derive(Serialize, Deserialize, Debug,PartialEq)]
+impl ToString for DataObject {
+    fn to_string(&self) -> String {
+        match self {
+            DataObject::String(value) => value.to_string(),
+            DataObject::Number(value) => {
+                return match value {
+                    Number::Int(v) => v.to_string(),
+                    Number::Float(v) => v.to_string(),
+                };
+            }
+            DataObject::Bool(value) => value.to_string(),
+            DataObject::Array(value) => todo!(),
+            DataObject::Object(value) => todo!(),
+        }
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub enum Number {
     Int(i64),
     Float(f64),
@@ -64,7 +81,7 @@ pub enum Number {
 ///     value: DataType::String("test".to_string()),
 /// };
 /// ```
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 pub struct Data {
     pub key: String,
     pub value: DataObject,
@@ -192,7 +209,7 @@ pub enum Command {
     Update(InsertData, Query),
     Delete(Query),
     Create(String),
-    Define(String,String, HashMap<String, Definition>),
+    Define(String, String, HashMap<String, Definition>),
     Alter,
     Drop,
 }
@@ -229,7 +246,7 @@ pub fn handle_message(db: &str, message: &str) -> Result<Command, SyntaxError> {
     } else if message.starts_with(CREATE) {
         parse_create_command(message)
     } else if message.starts_with(DEFINE) {
-        parse_define_command(db,message)
+        parse_define_command(db, message)
     } else if message.starts_with(ALTER) {
         todo!("Alter command");
     } else if message.starts_with(DROP) {
@@ -311,7 +328,7 @@ pub fn parse_create_command(input: &str) -> Result<Command, SyntaxError> {
 ///   _ => panic!("Expected Define command"),
 /// }
 /// ```
-fn parse_define_command(db: &str,input: &str) -> Result<Command, SyntaxError> {
+fn parse_define_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, DEFINE) {
         Ok((input, _)) => input,
         Err(err) => {
@@ -405,7 +422,11 @@ fn parse_define_command(db: &str,input: &str) -> Result<Command, SyntaxError> {
                     };
                     define.insert(key.to_string(), definition);
                 }
-                Ok(Command::Define(db.to_string(),table_name.to_string(), define))
+                Ok(Command::Define(
+                    db.to_string(),
+                    table_name.to_string(),
+                    define,
+                ))
             }
             _ => Err(SyntaxError::SyntaxError(
                 SyntaxErrorCode::InvalidValue,
@@ -757,7 +778,7 @@ fn handle_array(array: Vec<Value>) -> DataObject {
                 } else {
                     data.push(DataObject::Number(Number::Int(n.as_i64().unwrap())));
                 }
-            },
+            }
             Value::Array(a) => data.push(handle_array(a)),
             Value::Object(o) => data.push(handle_object(o)),
             Value::Bool(b) => data.push(DataObject::Bool(b)),
@@ -776,7 +797,6 @@ fn handle_object(object: serde_json::Map<String, Value>) -> DataObject {
                 value: DataObject::String(s.to_string()),
             }),
             Value::Number(n) => {
-
                 if n.is_f64() {
                     let num = DataObject::Number(Number::Float(n.as_f64().unwrap()));
                     data.push(Data {
@@ -1056,9 +1076,9 @@ mod tests {
     #[test]
     fn test_parse_defile_command() {
         let message = r#"DEFINE user { "name": { "type": "String", "indexed": true, "optional": false }, "age": { "type": "Number", "indexed": false, "optional": true }}"#;
-        match parse_define_command("user",message) {
+        match parse_define_command("user", message) {
             Ok(command) => match command {
-                Command::Define(db,table, define) => {
+                Command::Define(db, table, define) => {
                     assert_eq!(table, "user");
                     assert_eq!(define.len(), 2);
                     assert!(define.contains_key("name"));

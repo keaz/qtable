@@ -189,10 +189,8 @@ impl NoSqlDatabase {
             match query_data {
                 Ok(data) => {
                     return DataResponse::Data(data);
-                },
-                Err(e) => {
-                    return DataResponse::Error(format!("Error Quering data {}", e))
-                },
+                }
+                Err(e) => return DataResponse::Error(format!("Error Quering data {}", e)),
             };
         }
         DataResponse::Error(format!("Table {} not found", query.table_name))
