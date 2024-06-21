@@ -187,8 +187,12 @@ impl NoSqlDatabase {
         if let Some(data_object) = self.data_objects.get(&query.table_name) {
             let query_data = data_object.handle_query(&query.filter).await;
             match query_data {
-                Ok(data) => DataResponse::Data(data),
-                Err(e) => DataResponse::Error(format!("Error Quering data {}", e)),
+                Ok(data) => {
+                    return DataResponse::Data(data);
+                },
+                Err(e) => {
+                    return DataResponse::Error(format!("Error Quering data {}", e))
+                },
             };
         }
         DataResponse::Error(format!("Table {} not found", query.table_name))

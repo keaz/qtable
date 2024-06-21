@@ -11,7 +11,7 @@ use nom::{
     IResult,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value};
+use serde_json::Value;
 
 // DML
 const SELECT: &str = "SELECT";
@@ -44,6 +44,12 @@ pub enum DataObject {
     Bool(bool),
     Array(Vec<DataObject>),
     Object(Vec<Data>),
+}
+
+#[derive(Serialize, Deserialize, Debug,PartialEq)]
+pub enum Number {
+    Int(i64),
+    Float(f64),
 }
 
 /// Data is a struct that represents a key value pair
@@ -745,7 +751,13 @@ fn handle_array(array: Vec<Value>) -> DataObject {
     for value in array {
         match value {
             Value::String(s) => data.push(DataObject::String(s)),
-            Value::Number(n) => data.push(DataObject::Number(n)),
+            Value::Number(n) => {
+                if n.is_f64() {
+                    data.push(DataObject::Number(Number::Float(n.as_f64().unwrap())));
+                } else {
+                    data.push(DataObject::Number(Number::Int(n.as_i64().unwrap())));
+                }
+            },
             Value::Array(a) => data.push(handle_array(a)),
             Value::Object(o) => data.push(handle_object(o)),
             Value::Bool(b) => data.push(DataObject::Bool(b)),
@@ -763,10 +775,22 @@ fn handle_object(object: serde_json::Map<String, Value>) -> DataObject {
                 key: key.to_string(),
                 value: DataObject::String(s.to_string()),
             }),
-            Value::Number(n) => data.push(Data {
-                key: key.to_string(),
-                value: DataObject::Number(n.clone()),
-            }),
+            Value::Number(n) => {
+
+                if n.is_f64() {
+                    let num = DataObject::Number(Number::Float(n.as_f64().unwrap()));
+                    data.push(Data {
+                        key: key.to_string(),
+                        value: num,
+                    });
+                } else {
+                    let num = DataObject::Number(Number::Int(n.as_i64().unwrap()));
+                    data.push(Data {
+                        key: key.to_string(),
+                        value: num,
+                    });
+                }
+            }
             Value::Array(a) => data.push(Data {
                 key: key.to_string(),
                 value: handle_array(a.to_vec()),
@@ -963,7 +987,7 @@ mod tests {
                     assert_eq!(data[0].key, "age");
                     match &data[0].value {
                         DataObject::Number(n) => {
-                            assert_eq!(n, &30.into())
+                            assert_eq!(n, &Number::Int(30))
                         }
                         _ => panic!("Expected number"),
                     };
