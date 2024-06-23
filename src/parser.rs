@@ -191,7 +191,7 @@ pub struct Query {
     pub filter: Condition,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct InsertData {
     pub object_id: String,
     pub table: String,

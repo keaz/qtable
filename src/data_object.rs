@@ -2,10 +2,12 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
     io::SeekFrom,
+    str::pattern::Pattern,
     vec,
 };
 
 use log::{debug, error};
+use nom::Err;
 use serde::de::value;
 use tokio::{
     fs::{self, File},
@@ -489,10 +491,10 @@ impl NoSqlDataObject {
         }
     }
 
-    async fn get_data_objects(
+    async fn get_data_objects<'a>(
         &self,
-        old_index_ids: Vec<&IndexId>,
-    ) -> Result<Vec<InsertData>, DataObjectError> {
+        old_index_ids: Vec<&'a IndexId>,
+    ) -> Result<Vec<(&'a IndexId, InsertData)>, DataObjectError> {
         let mut insert_data = vec![];
         let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::open(data_file_name).await;
@@ -505,7 +507,7 @@ impl NoSqlDataObject {
                     let data_object = bincode::deserialize::<InsertData>(&data);
                     match data_object {
                         Ok(data_object) => {
-                            insert_data.push(data_object);
+                            insert_data.push((index_id, data_object));
                         }
                         Err(e) => {
                             error!("Error: {:?}", e);
@@ -531,14 +533,17 @@ impl NoSqlDataObject {
     async fn update_record(
         &self,
         old_index_ids: Vec<&IndexId>,
-        update_data: &InsertData,
+        update_data: InsertData,
     ) -> Result<IndexId, DataObjectError> {
         let old_data = self.get_data_objects(old_index_ids).await;
         let mut old_data =
             old_data.map_err(|_| DataObjectError::Update("Error getting old data".to_string()))?;
 
-        let data = bincode::serialize(update_data)
-            .map_err(|_| DataObjectError::Update("Error serializing update data".to_string()))?;
+        let data_to_save = old_data
+            .iter()
+            .map(|(index, data)| (index.clone(), self.compare_data_objects(&data, update_data)))
+            .collect::<Vec<_>>();
+
         let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
         let file = File::options()
             .append(true)
@@ -549,35 +554,70 @@ impl NoSqlDataObject {
                 DataObjectError::Serialize("Error opening data file".to_string())
             })?; // Data file
                  // should be available at this point
-        let data_len = data.len();
-        let mut positions = vec![];
 
-        let (position, file) = self.write_to_end(file, data).await?;
+        let mut index_ids = vec![];
+        for (index, data_to_save) in &data_to_save {
+            let data = bincode::serialize(data_to_save).map_err(|_| {
+                DataObjectError::Update("Error serializing update data".to_string())
+            })?;
+            let length = data.len();
+            let (position, file) = self.write_to_end(file, data).await?;
+            index_ids.push(IndexId { position, length });
+        }
 
         // Inactivate the old data
-        old_data.active = false;
-        let old_serialized = bincode::serialize(&old_data)
-            .map_err(|_| DataObjectError::Update("Error serializing old data".to_string()))?;
-        self.seek_and_write(file, position, old_serialized).await?; //#FIXME: We should rollback the data if this fails
+        for (index, old_data) in old_data {
+            old_data.active = false;
+            let old_serialized = bincode::serialize(&old_data)
+                .map_err(|_| DataObjectError::Update("Error serializing old data".to_string()))?;
+            self.seek_and_write(file, index.position, old_serialized)
+                .await?; //#FIXME: We should rollback the data if this fails
+        }
         Ok(IndexId {
             position,
             length: data_len,
         })
     }
 
-    fn compare_data_objects(&self, old_data: &InsertData, mut new_data: InsertData) -> InsertData {
-        if let DataObject::Object(new_data) = &mut new_data.data {
-            for data in new_data {
-                match data.value {
-                    DataObject::String(value) => {}
-                    DataObject::Number(value) => todo!(),
-                    DataObject::Bool(value) => todo!(),
-                    DataObject::Array(value) => todo!(),
-                    DataObject::Object(value) => todo!(),
-                }
+    //#FIXME: we should find a better way to implement this. Performance needs to be improved
+    fn compare_data_objects(
+        &self,
+        old_insert_data: &InsertData,
+        new_insert_data: InsertData,
+    ) -> InsertData {
+        match (&old_insert_data.data, new_insert_data.data) {
+            (DataObject::Object(old_data_vec), DataObject::Object(mut new_data_vec)) => {
+                // Adding old data to new data
+                let missing_old_data = old_data_vec
+                    .iter()
+                    .filter(|old_data| {
+                        new_data_vec
+                            .iter()
+                            .find(|new_data| new_data.key == old_data.key)
+                            .is_none()
+                    })
+                    .collect::<Vec<_>>();
+                //                   .for_each(|data| new_data_vec.push(data));
+                missing_old_data
+                    .into_iter()
+                    .for_each(|data| new_data_vec.push(data.clone()));
+
+                return InsertData {
+                    data: DataObject::Object(new_data_vec),
+                    table: new_insert_data.table,
+                    active: new_insert_data.active,
+                    object_id: new_insert_data.object_id,
+                };
+            }
+            _ => {
+                return InsertData {
+                    object_id: new_insert_data.object_id,
+                    table: new_insert_data.table,
+                    data: old_insert_data.data.clone(),
+                    active: old_insert_data.active,
+                };
             }
         }
-        new_data
     }
 
     fn compare(&self, old_data: &Vec<Data>, new_data: &Vec<Data>) -> Vec<Data> {
@@ -621,6 +661,16 @@ impl NoSqlDataObject {
                 }
             }
             (DataObject::Array(old_value), DataObject::Array(new_value)) => {
+                //TODO: Implement this
+                for dat in old_value {
+                    match dat {
+                        DataObject::String(_) => todo!(),
+                        DataObject::Number(_) => todo!(),
+                        DataObject::Bool(_) => todo!(),
+                        DataObject::Array(_) => todo!(),
+                        DataObject::Object(_) => todo!(),
+                    }
+                }
                 if old_value != new_value {
                     new_data.clone()
                 } else {
