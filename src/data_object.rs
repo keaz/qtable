@@ -172,10 +172,10 @@ async fn create_def(
 }
 
 impl NoSqlDataObject {
-    pub async fn add_to_index(&mut self, index_data: Vec<&Data>, object_id: &IndexId) {
+    pub async fn add_to_index(&mut self, index_data: Vec<&Data>, index_id: &IndexId) {
         for data in index_data {
             if let Some(index) = self.index.get_mut(data.key.as_str()) {
-                index.add_to_index(data.value.to_string().as_str(), object_id);
+                index.add_to_index(data.value.to_string().as_str(), index_id);
                 match index.save().await {
                     Ok(_) => debug!("Index saved"),
                     Err(e) => error!("Error saving index: {:?}", e), //#FIXME: Should handle
@@ -187,11 +187,11 @@ impl NoSqlDataObject {
 
     pub async fn update_index(
         &mut self,
-        index_data: &Vec<&Data>,
-        old_index_id: &IndexId,
-        new_index_id: &IndexId,
+        new_index_data: Vec<(IndexId, InsertData)>,
+        old_index_data: Vec<(IndexId, InsertData)>,
     ) -> Result<(), DataObjectError> {
-        for data in index_data {
+        for (index, data) in old_index_data {
+            let data = data.data;
             if let Some(index) = self.index.get_mut(data.key.as_str()) {
                 index.remove_from_index(data.value.to_string().as_str(), old_index_id);
                 match index.save().await {
@@ -201,7 +201,9 @@ impl NoSqlDataObject {
                 }
             }
         }
-        for data in index_data {
+
+        //TODO: Should add object_id  to the index
+        for data in new_index_data {
             if let Some(index) = self.index.get_mut(data.key.as_str()) {
                 index.add_to_index(data.value.to_string().as_str(), new_index_id);
                 match index.save().await {
@@ -319,7 +321,7 @@ impl NoSqlDataObject {
         Ok(())
     }
 
-    fn validate_index_data(&mut self, attributes: &Vec<Data>) -> Result<(), DataObjectError> {
+    fn validate_index_data(&self, attributes: &Vec<Data>) -> Result<(), DataObjectError> {
         let null_indexed_attra = attributes
             .iter()
             .filter(|att| !self.definition.contains_key(att.key.as_str()))
@@ -349,29 +351,17 @@ impl NoSqlDataObject {
         update_data: &InsertData,
         query: Query,
     ) -> Result<(), DataObjectError> {
-        let index_id = self.query(&query.filter);
-        let attributes = self.get_attributes(update_data.data.clone());
-        self.validate_index_data(&attributes)?;
-        if index_id.is_empty() {
+        let old_index_id = self.query(&query.filter);
+        let updated_attributes = self.get_attributes(update_data.data.clone());
+        self.validate_index_data(&updated_attributes)?;
+        if old_index_id.is_empty() {
             return Err(DataObjectError::Update("Data not found".to_string()));
         }
-        let index_id = index_id[0]; // #FIXME: Should handle multiple records
-        let new_index_id = self
-            .update_record(index_id.position, index_id.length, update_data)
+        let (new_index_data, old_index_data) = self
+            .update_record(old_index_id, update_data.clone())
             .await?;
 
-        let mut indexed_attr = attributes
-            .iter()
-            .filter(|att| self.definition.contains_key(att.key.as_str()))
-            .collect::<Vec<_>>();
-        let index_data = Data {
-            key: OBJECT_ID.to_string(),
-            value: DataObject::String(update_data.object_id.clone()),
-        };
-        indexed_attr.push(&index_data);
-
-        self.add_to_index(OBJECT_ID, &update_data.object_id, &new_index_id)
-            .await;
+        self.update_index(new_index_data, old_index_data).await?;
         Ok(())
     }
 
@@ -534,18 +524,23 @@ impl NoSqlDataObject {
         &self,
         old_index_ids: Vec<&IndexId>,
         update_data: InsertData,
-    ) -> Result<IndexId, DataObjectError> {
+    ) -> Result<(Vec<(IndexId, InsertData)>, Vec<(IndexId, InsertData)>), DataObjectError> {
         let old_data = self.get_data_objects(old_index_ids).await;
-        let mut old_data =
+        let old_data =
             old_data.map_err(|_| DataObjectError::Update("Error getting old data".to_string()))?;
 
         let data_to_save = old_data
             .iter()
-            .map(|(index, data)| (index.clone(), self.compare_data_objects(&data, update_data)))
+            .map(|(index, data)| {
+                (
+                    index.clone(),
+                    self.compare_data_objects(&data, update_data.clone()),
+                )
+            })
             .collect::<Vec<_>>();
 
         let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
-        let file = File::options()
+        let mut data_file = File::options()
             .append(true)
             .open(data_file_name)
             .await
@@ -556,27 +551,31 @@ impl NoSqlDataObject {
                  // should be available at this point
 
         let mut index_ids = vec![];
-        for (index, data_to_save) in &data_to_save {
+        for (_, data_to_save) in &data_to_save {
             let data = bincode::serialize(data_to_save).map_err(|_| {
                 DataObjectError::Update("Error serializing update data".to_string())
             })?;
             let length = data.len();
-            let (position, file) = self.write_to_end(file, data).await?;
-            index_ids.push(IndexId { position, length });
+            let (position, file) = self.write_to_end(data_file, data).await?; //#FIXME: We
+            data_file = file; //Handle this properly. should rollback other changes.
+            index_ids.push((IndexId { position, length }, data_to_save.clone()));
         }
 
         // Inactivate the old data
-        for (index, old_data) in old_data {
+        for (index, mut old_data) in old_data.clone() {
             old_data.active = false;
             let old_serialized = bincode::serialize(&old_data)
                 .map_err(|_| DataObjectError::Update("Error serializing old data".to_string()))?;
-            self.seek_and_write(file, index.position, old_serialized)
+            let (file, _) = self
+                .seek_and_write(data_file, index.position, old_serialized)
                 .await?; //#FIXME: We should rollback the data if this fails
+            data_file = file;
         }
-        Ok(IndexId {
-            position,
-            length: data_len,
-        })
+        let old_data = old_data
+            .iter()
+            .map(|(idx, data)| (idx.clone().to_owned(), data.clone()))
+            .collect::<Vec<_>>();
+        Ok((index_ids, old_data))
     }
 
     //#FIXME: we should find a better way to implement this. Performance needs to be improved
@@ -617,74 +616,6 @@ impl NoSqlDataObject {
                     active: old_insert_data.active,
                 };
             }
-        }
-    }
-
-    fn compare(&self, old_data: &Vec<Data>, new_data: &Vec<Data>) -> Vec<Data> {
-        let mut data = vec![];
-        for (old, new) in old_data.iter().zip(new_data.iter()) {
-            let updated_data = self.compare_data(old, new);
-            data.push(updated_data);
-        }
-
-        for old_data in old_data {
-            if let Some(new_data) = new_data.iter().find(|d| d.key == old_data.key) {
-                let updated_dat = self.compare_data(&old_data, new_data);
-                data.push(updated_dat);
-            }
-        }
-
-        data
-    }
-
-    fn compare_data(&self, old_data: &Data, new_data: &Data) -> Data {
-        match (&old_data.value, &new_data.value) {
-            (DataObject::String(old_value), DataObject::String(new_value)) => {
-                if old_value != new_value {
-                    new_data.clone()
-                } else {
-                    old_data.clone()
-                }
-            }
-            (DataObject::Number(old_value), DataObject::Number(new_value)) => {
-                if old_value != new_value {
-                    new_data.clone()
-                } else {
-                    old_data.clone()
-                }
-            }
-            (DataObject::Bool(old_value), DataObject::Bool(new_value)) => {
-                if old_value != new_value {
-                    new_data.clone()
-                } else {
-                    old_data.clone()
-                }
-            }
-            (DataObject::Array(old_value), DataObject::Array(new_value)) => {
-                //TODO: Implement this
-                for dat in old_value {
-                    match dat {
-                        DataObject::String(_) => todo!(),
-                        DataObject::Number(_) => todo!(),
-                        DataObject::Bool(_) => todo!(),
-                        DataObject::Array(_) => todo!(),
-                        DataObject::Object(_) => todo!(),
-                    }
-                }
-                if old_value != new_value {
-                    new_data.clone()
-                } else {
-                    old_data.clone()
-                }
-            }
-            (DataObject::Object(old_value), DataObject::Object(new_value)) => {
-                let data = self.compare(old_value, new_value);
-                Data {
-                    key: old_data.key.clone(),
-                    value: DataObject::Object(data),
-                }
-            }
-            _ => new_data.clone(),
         }
     }
 
@@ -789,12 +720,12 @@ impl NoSqlDataObject {
         mut file: File,
         position: u64,
         data: Vec<u8>,
-    ) -> Result<u64, DataObjectError> {
+    ) -> Result<(File, u64), DataObjectError> {
         let position = file.seek(SeekFrom::Start(position)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
         file.write_all(&data).await.unwrap();
         file.flush().await.unwrap();
-        Ok(position)
+        Ok((file, position))
     }
 
     pub async fn seek_and_read(
