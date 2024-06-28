@@ -2,7 +2,6 @@ use std::{
     collections::HashMap,
     fmt::{Display, Formatter},
     io::SeekFrom,
-    str::pattern::Pattern,
     vec,
 };
 
@@ -190,26 +189,58 @@ impl NoSqlDataObject {
         new_index_data: Vec<(IndexId, InsertData)>,
         old_index_data: Vec<(IndexId, InsertData)>,
     ) -> Result<(), DataObjectError> {
-        for (index, data) in old_index_data {
-            let data = data.data;
-            if let Some(index) = self.index.get_mut(data.key.as_str()) {
-                index.remove_from_index(data.value.to_string().as_str(), old_index_id);
+        for (index_id, data) in old_index_data {
+            let data_object = data.data;
+            let attributes = self
+                .get_attributes(&data_object)
+                .iter()
+                .filter(|attra| self.definition.contains_key(attra.key.as_str()))
+                .copied()
+                .collect::<Vec<_>>();
+
+            for attra in attributes {
+                if let Some(index) = self.index.get_mut(attra.key.as_str()) {
+                    index.remove_from_index(attra.value.to_string().as_str(), &index_id);
+                    match index.save().await {
+                        Ok(_) => debug!("Index saved"),
+                        Err(e) => error!("Error saving index: {:?}", e), //#FIXME: Should handle
+                                                                         //the error
+                    }
+                }
+            }
+            if let Some(index) = self.index.get_mut(OBJECT_ID) {
+                index.remove_from_index(data.object_id.as_str(), &index_id);
                 match index.save().await {
-                    Ok(_) => debug!("Index saved"),
-                    Err(e) => error!("Error saving index: {:?}", e), //#FIXME: Should handle
-                                                                     //the error
+                    Ok(_) => debug!("Object ID index remvoed"),
+                    Err(e) => error!("Error saving index: {:?}", e),
                 }
             }
         }
 
-        //TODO: Should add object_id  to the index
-        for data in new_index_data {
-            if let Some(index) = self.index.get_mut(data.key.as_str()) {
-                index.add_to_index(data.value.to_string().as_str(), new_index_id);
+        for (index_id, data) in new_index_data {
+            let data_object = data.data;
+            let attributes = self
+                .get_attributes(&data_object)
+                .iter()
+                .filter(|attra| self.definition.contains_key(attra.key.as_str()))
+                .copied()
+                .collect::<Vec<_>>();
+
+            for attra in attributes {
+                if let Some(index) = self.index.get_mut(attra.key.as_str()) {
+                    index.add_to_index(attra.value.to_string().as_str(), &index_id);
+                    match index.save().await {
+                        Ok(_) => debug!("Index saved"),
+                        Err(e) => error!("Error saving index: {:?}", e), //#FIXME: Should handle
+                                                                         //the error
+                    }
+                }
+            }
+            if let Some(index) = self.index.get_mut(OBJECT_ID) {
+                index.add_to_index(data.object_id.as_str(), &index_id);
                 match index.save().await {
-                    Ok(_) => debug!("Index saved"),
-                    Err(e) => error!("Error saving index: {:?}", e), //#FIXME: Should handle
-                                                                     //the error
+                    Ok(_) => debug!("Object ID index remvoed"),
+                    Err(e) => error!("Error saving index: {:?}", e),
                 }
             }
         }
@@ -304,13 +335,15 @@ impl NoSqlDataObject {
     }
 
     pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), DataObjectError> {
-        let attributes = self.get_attributes(insert_data.data.clone());
+        let attributes = self.get_attributes(&insert_data.data);
         self.validate_index_data(&attributes)?;
         let index_id = self.insert_record(insert_data).await?;
 
         let mut indexed_attr = attributes
+            .clone()
             .iter()
             .filter(|att| self.definition.contains_key(att.key.as_str()))
+            .map(|data| *data)
             .collect::<Vec<_>>();
         let index_data = Data {
             key: OBJECT_ID.to_string(),
@@ -321,7 +354,7 @@ impl NoSqlDataObject {
         Ok(())
     }
 
-    fn validate_index_data(&self, attributes: &Vec<Data>) -> Result<(), DataObjectError> {
+    fn validate_index_data(&self, attributes: &Vec<&Data>) -> Result<(), DataObjectError> {
         let null_indexed_attra = attributes
             .iter()
             .filter(|att| !self.definition.contains_key(att.key.as_str()))
@@ -336,7 +369,7 @@ impl NoSqlDataObject {
         Ok(())
     }
 
-    fn get_attributes(&self, insert_data: DataObject) -> Vec<Data> {
+    fn get_attributes<'a>(&self, insert_data: &'a DataObject) -> Vec<&'a Data> {
         let mut attributes = vec![];
         if let DataObject::Object(data) = insert_data {
             for data in data {
@@ -352,7 +385,7 @@ impl NoSqlDataObject {
         query: Query,
     ) -> Result<(), DataObjectError> {
         let old_index_id = self.query(&query.filter);
-        let updated_attributes = self.get_attributes(update_data.data.clone());
+        let updated_attributes = self.get_attributes(&update_data.data);
         self.validate_index_data(&updated_attributes)?;
         if old_index_id.is_empty() {
             return Err(DataObjectError::Update("Data not found".to_string()));
@@ -531,12 +564,7 @@ impl NoSqlDataObject {
 
         let data_to_save = old_data
             .iter()
-            .map(|(index, data)| {
-                (
-                    index.clone(),
-                    self.compare_data_objects(&data, update_data.clone()),
-                )
-            })
+            .map(|(index, data)| (index, self.compare_data_objects(data, update_data.clone())))
             .collect::<Vec<_>>();
 
         let data_file_name = format!("{}/{}.dat", self.root_path, self.data_object);
@@ -573,7 +601,7 @@ impl NoSqlDataObject {
         }
         let old_data = old_data
             .iter()
-            .map(|(idx, data)| (idx.clone().to_owned(), data.clone()))
+            .map(|(idx, data)| (idx.to_owned().clone(), data.clone()))
             .collect::<Vec<_>>();
         Ok((index_ids, old_data))
     }
@@ -848,19 +876,21 @@ mod test {
 
         let data_object = DataObject::Object(vec![data]);
         let update_data = InsertData {
-            object_id: object_id,
+            object_id,
             table: "test".to_string(),
             data: data_object,
             active: true,
         };
-        let new_index_id = nosql_data_object
-            .update_record(index_id.position, index_id.length, &update_data)
+        let index_ids = vec![&index_id];
+        let (new_data_detil, _) = nosql_data_object
+            .update_record(index_ids, update_data)
             .await
             .unwrap();
-        let data = nosql_data_object
-            .get_record(vec![&new_index_id])
-            .await
-            .unwrap();
+        let new_index_ids = new_data_detil
+            .iter()
+            .map(|(index_id, _)| index_id)
+            .collect::<Vec<_>>();
+        let data = nosql_data_object.get_record(new_index_ids).await.unwrap();
         match &data[0].data {
             DataObject::Object(data) => {
                 assert_eq!(data[0].key, "name");
