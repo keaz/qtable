@@ -44,21 +44,21 @@ pub enum DataObject {
     Bool(bool),
     Array(Vec<DataObject>),
     Object(Vec<Data>),
+    Null,
 }
 
-impl ToString for DataObject {
-    fn to_string(&self) -> String {
+impl Display for DataObject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            DataObject::String(value) => value.to_string(),
-            DataObject::Number(value) => {
-                return match value {
-                    Number::Int(v) => v.to_string(),
-                    Number::Float(v) => v.to_string(),
-                };
-            }
-            DataObject::Bool(value) => value.to_string(),
+            DataObject::String(value) => write!(f, "{}", value),
+            DataObject::Number(value) => match value {
+                Number::Int(v) => write!(f, "{}", v),
+                Number::Float(v) => write!(f, "{}", v),
+            },
+            DataObject::Bool(value) => write!(f, "{}", value),
             DataObject::Array(value) => todo!(),
             DataObject::Object(value) => todo!(),
+            DataObject::Null => todo!(),
         }
     }
 }
@@ -823,7 +823,10 @@ fn handle_object(object: serde_json::Map<String, Value>) -> DataObject {
                 key: key.to_string(),
                 value: DataObject::Bool(*b),
             }),
-            Value::Null => (),
+            Value::Null => data.push(Data {
+                key: key.to_string(),
+                value: DataObject::Null,
+            }),
         }
     }
     DataObject::Object(data)

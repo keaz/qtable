@@ -367,9 +367,65 @@ impl NoSqlDataObject {
                 self.definition
             )));
         }
+
+        let defined_mandatory_attra = self.defined_mandatory_attra();
+
+        let mandatory_attra = attributes
+            .iter()
+            .copied()
+            .filter(|att| defined_mandatory_attra.contains(&att.key))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if mandatory_attra.len() < defined_mandatory_attra.len() {
+            return Err(DataObjectError::Insert(format!(
+                "Not all the mandatory attributes are provided: {:?}",
+                self.definition
+            )));
+        }
         Ok(indexed_attra)
     }
 
+    fn validate_update_data(&self, attributes: &Vec<&Data>) -> Result<Vec<Data>, DataObjectError> {
+        let defined_index_atta = self.defined_indexed_attra();
+
+        let indexed_attra = attributes
+            .iter()
+            .copied()
+            .filter(|att| defined_index_atta.contains(&att.key))
+            .filter(|att| {
+                if let DataObject::Null = att.value {
+                    return true;
+                }
+                false
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if indexed_attra.len() < defined_index_atta.len() {
+            return Err(DataObjectError::Insert(format!(
+                "Not all the indexed attributes are provided: {:?}",
+                self.definition
+            )));
+        }
+
+        let defined_mandatory_attra = self.defined_mandatory_attra();
+
+        let mandatory_attra = attributes
+            .iter()
+            .copied()
+            .filter(|att| defined_mandatory_attra.contains(&att.key))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if mandatory_attra.len() < defined_mandatory_attra.len() {
+            return Err(DataObjectError::Insert(format!(
+                "Not all the mandatory attributes are provided: {:?}",
+                self.definition
+            )));
+        }
+        Ok(indexed_attra)
+    }
     fn defined_indexed_attra(&self) -> Vec<String> {
         let defined_index_atta = self
             .definition
@@ -380,6 +436,15 @@ impl NoSqlDataObject {
         defined_index_atta
     }
 
+    fn defined_mandatory_attra(&self) -> Vec<String> {
+        let defined_mandatory_atta = self
+            .definition
+            .iter()
+            .filter(|(_, def)| !def.optional)
+            .map(|(key, _)| key.to_owned())
+            .collect::<Vec<_>>();
+        defined_mandatory_atta
+    }
     fn get_attributes<'a>(&self, insert_data: &'a DataObject) -> Vec<&'a Data> {
         let mut attributes = vec![];
         if let DataObject::Object(data) = insert_data {
