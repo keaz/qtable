@@ -171,7 +171,7 @@ async fn create_def(
 }
 
 impl NoSqlDataObject {
-    pub async fn add_to_index(&mut self, index_data: Vec<&Data>, index_id: &IndexId) {
+    pub async fn add_to_index(&mut self, index_data: Vec<Data>, index_id: &IndexId) {
         for data in index_data {
             if let Some(index) = self.index.get_mut(data.key.as_str()) {
                 index.add_to_index(data.value.to_string().as_str(), index_id);
@@ -336,37 +336,48 @@ impl NoSqlDataObject {
 
     pub async fn handle_insert(&mut self, insert_data: &InsertData) -> Result<(), DataObjectError> {
         let attributes = self.get_attributes(&insert_data.data);
-        self.validate_index_data(&attributes)?;
+        let mut indexed_attr = self.validate_insert_index_data(&attributes)?;
         let index_id = self.insert_record(insert_data).await?;
 
-        let mut indexed_attr = attributes
-            .clone()
-            .iter()
-            .filter(|att| self.definition.contains_key(att.key.as_str()))
-            .map(|data| *data)
-            .collect::<Vec<_>>();
         let index_data = Data {
             key: OBJECT_ID.to_string(),
             value: DataObject::String(insert_data.object_id.clone()),
         };
-        indexed_attr.push(&index_data);
+        indexed_attr.push(index_data);
         self.add_to_index(indexed_attr, &index_id).await; //# FIXME: should add other attributes to the index considering the definition
         Ok(())
     }
 
-    fn validate_index_data(&self, attributes: &Vec<&Data>) -> Result<(), DataObjectError> {
-        let null_indexed_attra = attributes
+    fn validate_insert_index_data(
+        &self,
+        attributes: &Vec<&Data>,
+    ) -> Result<Vec<Data>, DataObjectError> {
+        let defined_index_atta = self.defined_indexed_attra();
+
+        let indexed_attra = attributes
             .iter()
-            .filter(|att| !self.definition.contains_key(att.key.as_str()))
+            .copied()
+            .filter(|att| defined_index_atta.contains(&att.key))
+            .cloned()
             .collect::<Vec<_>>();
 
-        if !null_indexed_attra.is_empty() {
+        if indexed_attra.len() < defined_index_atta.len() {
             return Err(DataObjectError::Insert(format!(
-                "Attributes {:?} are not defined",
-                null_indexed_attra
+                "Not all the indexed attributes are provided: {:?}",
+                self.definition
             )));
         }
-        Ok(())
+        Ok(indexed_attra)
+    }
+
+    fn defined_indexed_attra(&self) -> Vec<String> {
+        let defined_index_atta = self
+            .definition
+            .iter()
+            .filter(|(_, def)| def.indexed)
+            .map(|(key, _)| key.to_owned())
+            .collect::<Vec<_>>();
+        defined_index_atta
     }
 
     fn get_attributes<'a>(&self, insert_data: &'a DataObject) -> Vec<&'a Data> {
@@ -386,7 +397,7 @@ impl NoSqlDataObject {
     ) -> Result<(), DataObjectError> {
         let old_index_id = self.query(&query.filter);
         let updated_attributes = self.get_attributes(&update_data.data);
-        self.validate_index_data(&updated_attributes)?;
+        self.validate_insert_index_data(&updated_attributes)?;
         if old_index_id.is_empty() {
             return Err(DataObjectError::Update("Data not found".to_string()));
         }
@@ -898,5 +909,74 @@ mod test {
             }
             _ => panic!("Data not found"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_validate_index_data() {
+        let mut definitions = HashMap::new();
+        let name_definition = Definition {
+            data_type: "String".to_string(),
+            indexed: true,
+            optional: true,
+        };
+        let age_definition = Definition {
+            data_type: "Number".to_string(),
+            indexed: false,
+            optional: true,
+        };
+        definitions.insert("name".to_string(), name_definition);
+        definitions.insert("age".to_string(), age_definition);
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let path = dir.path();
+        fs::create_dir_all(path).await.unwrap();
+        let root_dir = path.to_str().unwrap().to_string();
+        let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
+        assert!(nosql_data_object.is_ok());
+        let nosql_data_object = nosql_data_object.unwrap();
+        let data = Data {
+            key: "name".to_string(),
+            value: DataObject::String("Smith".to_string()),
+        };
+        let attributes = vec![&data];
+        let result = nosql_data_object.validate_insert_index_data(&attributes);
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_validate_null_index_data() {
+        let mut definitions = HashMap::new();
+        let name_definition = Definition {
+            data_type: "String".to_string(),
+            indexed: true,
+            optional: true,
+        };
+        let age_definition = Definition {
+            data_type: "Number".to_string(),
+            indexed: false,
+            optional: true,
+        };
+        definitions.insert("name".to_string(), name_definition);
+        definitions.insert("age".to_string(), age_definition);
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let path = dir.path();
+        fs::create_dir_all(path).await.unwrap();
+        let root_dir = path.to_str().unwrap().to_string();
+        let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
+        assert!(nosql_data_object.is_ok());
+        let nosql_data_object = nosql_data_object.unwrap();
+        let data = Data {
+            key: "age".to_string(),
+            value: DataObject::String("23".to_string()),
+        };
+        let attributes = vec![&data];
+        let result = nosql_data_object.validate_insert_index_data(&attributes);
+        assert!(result.is_err());
     }
 }
