@@ -6,8 +6,6 @@ use std::{
 };
 
 use log::{debug, error};
-use nom::Err;
-use serde::de::value;
 use tokio::{
     fs::{self, File},
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
@@ -350,7 +348,7 @@ impl NoSqlDataObject {
 
     fn validate_insert_index_data(
         &self,
-        attributes: &Vec<&Data>,
+        attributes: &[&Data],
     ) -> Result<Vec<Data>, DataObjectError> {
         let defined_index_atta = self.defined_indexed_attra();
 
@@ -361,22 +359,38 @@ impl NoSqlDataObject {
             .cloned()
             .collect::<Vec<_>>();
 
-        if indexed_attra.len() < defined_index_atta.len() {
+        let missing_indexed_attra = defined_index_atta
+            .iter()
+            .filter(|att| !attributes.iter().any(|data| data.key == **att))
+            .collect::<Vec<_>>();
+
+        // Check if all the indexed attributes are provided
+        if !missing_indexed_attra.is_empty() {
             return Err(DataObjectError::Insert(format!(
                 "Not all the indexed attributes are provided: {:?}",
-                self.definition
+                missing_indexed_attra
             )));
         }
 
+        self.validate_null_index(attributes, &defined_index_atta)?;
         let defined_mandatory_attra = self.defined_mandatory_attra();
 
         let mandatory_attra = attributes
             .iter()
             .copied()
-            .filter(|att| defined_mandatory_attra.contains(&att.key))
+            .filter(|att| {
+                if !defined_mandatory_attra.contains(&att.key) {
+                    return false;
+                }
+                if let DataObject::Null = att.value {
+                    return false;
+                }
+                true
+            })
             .cloned()
             .collect::<Vec<_>>();
 
+        // Check if all the mandatory attributes are provided
         if mandatory_attra.len() < defined_mandatory_attra.len() {
             return Err(DataObjectError::Insert(format!(
                 "Not all the mandatory attributes are provided: {:?}",
@@ -386,29 +400,9 @@ impl NoSqlDataObject {
         Ok(indexed_attra)
     }
 
-    fn validate_update_data(&self, attributes: &Vec<&Data>) -> Result<Vec<Data>, DataObjectError> {
+    fn validate_update_data(&self, attributes: &[&Data]) -> Result<Vec<Data>, DataObjectError> {
         let defined_index_atta = self.defined_indexed_attra();
-
-        let indexed_attra = attributes
-            .iter()
-            .copied()
-            .filter(|att| defined_index_atta.contains(&att.key))
-            .filter(|att| {
-                if let DataObject::Null = att.value {
-                    return true;
-                }
-                false
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-
-        if indexed_attra.len() < defined_index_atta.len() {
-            return Err(DataObjectError::Insert(format!(
-                "Not all the indexed attributes are provided: {:?}",
-                self.definition
-            )));
-        }
-
+        self.validate_null_index(attributes, &defined_index_atta)?;
         let defined_mandatory_attra = self.defined_mandatory_attra();
 
         let mandatory_attra = attributes
@@ -424,7 +418,7 @@ impl NoSqlDataObject {
                 self.definition
             )));
         }
-        Ok(indexed_attra)
+        Ok(mandatory_attra)
     }
     fn defined_indexed_attra(&self) -> Vec<String> {
         let defined_index_atta = self
@@ -445,6 +439,7 @@ impl NoSqlDataObject {
             .collect::<Vec<_>>();
         defined_mandatory_atta
     }
+
     fn get_attributes<'a>(&self, insert_data: &'a DataObject) -> Vec<&'a Data> {
         let mut attributes = vec![];
         if let DataObject::Object(data) = insert_data {
@@ -455,6 +450,30 @@ impl NoSqlDataObject {
         attributes
     }
 
+    fn validate_null_index(
+        &self,
+        attributes: &[&Data],
+        defined_index_atta: &[String],
+    ) -> Result<(), DataObjectError> {
+        let null_indexed_attra = attributes
+            .iter()
+            .copied()
+            .filter(|att| defined_index_atta.contains(&att.key))
+            .filter(|att| {
+                if let DataObject::Null = att.value {
+                    return true;
+                }
+                false
+            })
+            .collect::<Vec<_>>();
+        if !null_indexed_attra.is_empty() {
+            return Err(DataObjectError::Insert(format!(
+                "Not all the indexed attributes are provided: {:?}",
+                null_indexed_attra
+            )));
+        }
+        Ok(())
+    }
     pub async fn handle_update(
         &mut self,
         update_data: &InsertData,
@@ -694,10 +713,9 @@ impl NoSqlDataObject {
                 let missing_old_data = old_data_vec
                     .iter()
                     .filter(|old_data| {
-                        new_data_vec
+                        !new_data_vec
                             .iter()
-                            .find(|new_data| new_data.key == old_data.key)
-                            .is_none()
+                            .any(|new_data| new_data.key == old_data.key)
                     })
                     .collect::<Vec<_>>();
                 //                   .for_each(|data| new_data_vec.push(data));
@@ -705,21 +723,19 @@ impl NoSqlDataObject {
                     .into_iter()
                     .for_each(|data| new_data_vec.push(data.clone()));
 
-                return InsertData {
+                InsertData {
                     data: DataObject::Object(new_data_vec),
                     table: new_insert_data.table,
                     active: new_insert_data.active,
                     object_id: new_insert_data.object_id,
-                };
+                }
             }
-            _ => {
-                return InsertData {
-                    object_id: new_insert_data.object_id,
-                    table: new_insert_data.table,
-                    data: old_insert_data.data.clone(),
-                    active: old_insert_data.active,
-                };
-            }
+            _ => InsertData {
+                object_id: new_insert_data.object_id,
+                table: new_insert_data.table,
+                data: old_insert_data.data.clone(),
+                active: old_insert_data.active,
+            },
         }
     }
 
@@ -1039,6 +1055,68 @@ mod test {
         let data = Data {
             key: "age".to_string(),
             value: DataObject::String("23".to_string()),
+        };
+        let attributes = vec![&data];
+        let result = nosql_data_object.validate_insert_index_data(&attributes);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_null_mandatory_data() {
+        let mut definitions = HashMap::new();
+        let name_definition = Definition {
+            data_type: "String".to_string(),
+            indexed: false,
+            optional: false,
+        };
+        definitions.insert("name".to_string(), name_definition);
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let path = dir.path();
+        fs::create_dir_all(path).await.unwrap();
+        let root_dir = path.to_str().unwrap().to_string();
+        let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
+        assert!(nosql_data_object.is_ok());
+        let nosql_data_object = nosql_data_object.unwrap();
+        let data = Data {
+            key: "name".to_string(),
+            value: DataObject::Null,
+        };
+        let attributes = vec![&data];
+        let result = nosql_data_object.validate_insert_index_data(&attributes);
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_validate_missing_mandatory_data() {
+        let mut definitions = HashMap::new();
+        let name_definition = Definition {
+            data_type: "String".to_string(),
+            indexed: false,
+            optional: false,
+        };
+        let age_definition = Definition {
+            data_type: "Number".to_string(),
+            indexed: false,
+            optional: false,
+        };
+        definitions.insert("name".to_string(), name_definition);
+        definitions.insert("age".to_string(), age_definition);
+        let dir = Builder::new()
+            .prefix("data")
+            .tempdir()
+            .expect("Failed to create temp directory");
+        let path = dir.path();
+        fs::create_dir_all(path).await.unwrap();
+        let root_dir = path.to_str().unwrap().to_string();
+        let nosql_data_object = NoSqlDataObject::new("test", &root_dir, definitions).await;
+        assert!(nosql_data_object.is_ok());
+        let nosql_data_object = nosql_data_object.unwrap();
+        let data = Data {
+            key: "name".to_string(),
+            value: DataObject::String("John".to_string()),
         };
         let attributes = vec![&data];
         let result = nosql_data_object.validate_insert_index_data(&attributes);

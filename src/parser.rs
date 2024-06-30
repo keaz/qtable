@@ -966,6 +966,60 @@ fn parse_simple_condition(input: &str) -> IResult<&str, Condition> {
             )),
             |(field, _, value)| Condition::GreaterThanOrEqual(field.to_string(), value),
         ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag(">"), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| Condition::GreaterThan(field.to_string(), value),
+        ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag("<="), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| Condition::LessThanOrEqual(field.to_string(), value),
+        ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag("<"), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| Condition::LessThan(field.to_string(), value),
+        ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag("LIKE"), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| {
+                Condition::WildCard(WildCardOperations::Contains(field.to_string(), value))
+            },
+        ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag("STARTS WITH"), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| {
+                Condition::WildCard(WildCardOperations::StartsWith(field.to_string(), value))
+            },
+        ),
+        map(
+            tuple((
+                take_while(|c: char| c.is_alphanumeric() || c == '_'),
+                delimited(multispace0, tag("ENDS WITH"), multispace0),
+                parse_value,
+            )),
+            |(field, _, value)| {
+                Condition::WildCard(WildCardOperations::EndsWith(field.to_string(), value))
+            },
+        ),
     ))(input)
 }
 
