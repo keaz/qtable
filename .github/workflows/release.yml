@@ -55,11 +55,15 @@ jobs:
       # Step 5: Build with Cargo (macOS universal requires both targets)
       - name: Build with Cargo
         run: |
-          cargo build --release --target x86_64-apple-darwin
-          cargo build --release --target aarch64-apple-darwin
-          lipo -create -output ./target/release/universal_binary \
-                ./target/x86_64-apple-darwin/release/kcli \
-                ./target/aarch64-apple-darwin/release/kcli
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            cargo build --release --target ${{ matrix.target_x86 }}
+            cargo build --release --target ${{ matrix.target_arm }}
+            lipo -create -output ./target/release/universal_binary \
+                 ./target/${{ matrix.target_x86 }}/release/your_binary_name \
+                 ./target/${{ matrix.target_arm }}/release/your_binary_name
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
         shell: bash
 
       # Step 6: Determine if the release is a pre-release
