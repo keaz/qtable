@@ -95,10 +95,6 @@ jobs:
         env:
             GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set Asset Path
-        id: set_asset_path
-        run: echo "asset_path=${{ matrix.os == 'macos-latest' && './target/release/universal_binary' || './target/${{ matrix.target }}/release/qtable' }}" >> $GITHUB_ENV
-      
         # Step 8: Upload Release Artifact
       - name: Upload Release Artifact
         uses: actions/upload-release-asset@v1
