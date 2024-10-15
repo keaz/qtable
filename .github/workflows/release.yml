@@ -66,7 +66,7 @@ jobs:
                  ./target/${{ matrix.target_x86 }}/release/qtable \
                  ./target/${{ matrix.target_arm }}/release/qtable
           else
-            cargo build --release --target ${{ matrix.target }}
+            cargo build --release
           fi
         shell: bash
 
