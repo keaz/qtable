@@ -5,7 +5,7 @@ use tokio::fs;
 use walkdir::WalkDir;
 
 use crate::{
-    data_object::{self, NoSqlDataObject},
+    data_object::NoSqlDataObject,
     parser::{handle_message, Definition, InsertData, Query},
 };
 
@@ -203,8 +203,7 @@ mod test {
     use tempfile::Builder;
 
     use super::*;
-    use crate::data_object::NoSqlDataObject;
-    use std::{collections::HashMap, fs::File};
+    use std::fs::File;
 
     #[tokio::test]
     async fn test_new_database() {

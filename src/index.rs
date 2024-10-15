@@ -168,7 +168,7 @@ pub async fn new_or_load(attribute: &str, parent_path: &str) -> Result<Box<dyn I
     if tokio::fs::metadata(&index_file).await.is_err() {
         // Index file does not exist yet so we create it
         let file = File::create(&index_file).await;
-        let _ = file.map_err(|e| IndexError::FileError(e))?;
+        let _ = file.map_err(IndexError::FileError)?;
     }
 
     match File::options()

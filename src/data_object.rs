@@ -474,6 +474,7 @@ impl NoSqlDataObject {
         }
         Ok(())
     }
+
     pub async fn handle_update(
         &mut self,
         update_data: &InsertData,
@@ -481,7 +482,7 @@ impl NoSqlDataObject {
     ) -> Result<(), DataObjectError> {
         let old_index_id = self.query(&query.filter);
         let updated_attributes = self.get_attributes(&update_data.data);
-        self.validate_insert_index_data(&updated_attributes)?;
+        self.validate_update_data(&updated_attributes)?;
         if old_index_id.is_empty() {
             return Err(DataObjectError::Update("Data not found".to_string()));
         }
@@ -830,6 +831,8 @@ impl NoSqlDataObject {
     ) -> Result<(u64, File), DataObjectError> {
         let position = file.seek(SeekFrom::End(0)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
+        let len = data.len().to_be_bytes();
+        let data = [len.to_vec(), data].concat();
         file.write_all(&data).await.unwrap();
         file.flush().await.unwrap();
         Ok((position, file))
@@ -843,6 +846,8 @@ impl NoSqlDataObject {
     ) -> Result<(File, u64), DataObjectError> {
         let position = file.seek(SeekFrom::Start(position)).await.unwrap();
         debug!("Writing data to file: {:?}", position);
+        let len = data.len().to_be_bytes();
+        let data = [len.to_vec(), data].concat();
         file.write_all(&data).await.unwrap();
         file.flush().await.unwrap();
         Ok((file, position))

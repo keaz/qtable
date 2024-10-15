@@ -470,7 +470,7 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    let (input, json) = match extract_update_json(input) {
+    let (input, json) = match extract_update_json(input.trim()) {
         Ok((input, json)) => (input, json),
         Err(err) => {
             error!("Error: {:?}", err);
@@ -513,7 +513,7 @@ fn parse_update_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
         }
     };
 
-    let (_, json_str) = match extract_json(input) {
+    let (_, _) = match extract_json(input) {
         Ok((input, json_str)) => (input, json_str),
         Err(err) => {
             error!("Error: {:?}", err);
@@ -558,6 +558,7 @@ fn remove_white_spaces(input: &str) -> IResult<&str, &str> {
 fn extract_update_json(input: &str) -> IResult<&str, Value> {
     delimited(char('{'), parse_update_json, char('}'))(input)
 }
+
 fn parse_update_json(input: &str) -> IResult<&str, Value> {
     map_res(take_while(|c| c != '}'), |s: &str| {
         serde_json::from_str(&format!("{{{}}}", s))
@@ -668,7 +669,7 @@ fn parse_delete_json<'a>(
     }
 }
 
-fn parse_insert_command(db: &str, input: &str) -> Result<Command, SyntaxError> {
+fn parse_insert_command(_: &str, input: &str) -> Result<Command, SyntaxError> {
     let input = match remove(input, "INSERT INTO") {
         Ok((input, _)) => input,
         Err(err) => {
@@ -1131,11 +1132,11 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_defile_command() {
+    fn test_parse_define_command() {
         let message = r#"DEFINE user { "name": { "type": "String", "indexed": true, "optional": false }, "age": { "type": "Number", "indexed": false, "optional": true }}"#;
         match parse_define_command("user", message) {
             Ok(command) => match command {
-                Command::Define(db, table, define) => {
+                Command::Define(_, table, define) => {
                     assert_eq!(table, "user");
                     assert_eq!(define.len(), 2);
                     assert!(define.contains_key("name"));
@@ -1223,7 +1224,7 @@ mod tests {
     fn test_parse_condition() {
         let message = r#"id = '123' AND (name = 'John' OR age >= 30)"#;
         match parse_condition(message) {
-            Ok((x, condition)) => match condition {
+            Ok((_, condition)) => match condition {
                 Condition::And(left, right) => {
                     match *left {
                         Condition::Equal(field, value) => {
@@ -1309,6 +1310,79 @@ mod tests {
             Err(e) => {
                 panic!("Expected value but got {:?}", e);
             }
+        }
+    }
+
+    #[test]
+    fn test_parse_update(){
+        let db = "db";
+        let message = r#"UPDATE user {"name":"John","age":30} WHERE id = '123' and name = 'John' and age >= 30"#;
+        if let Command::Update(update_data, query) = parse_update_command(db, message).unwrap() {
+            assert_eq!(update_data.table, ("user"));
+            match update_data.data {
+                DataObject::Object(data) => {
+                    assert_eq!(data[1].key, "name");
+                    match &data[1].value {
+                        DataObject::String(s) => {
+                            assert_eq!(s.as_str(), "John")
+                        }
+                        _ => panic!("Expected string"),
+                    };
+                    assert_eq!(data[0].key, "age");
+                    match &data[0].value {
+                        DataObject::Number(n) => {
+                            assert_eq!(n, &Number::Int(30))
+                        }
+                        _ => panic!("Expected number"),
+                    };
+                }
+                _ => {
+                    panic!("Expected object");
+                }
+            }
+            match query.filter {
+                Condition::And(left, right) => {
+                    match *left {
+                        Condition::Equal(field, value) => {
+                            assert_eq!(field, "id");
+                            assert_eq!(value, "123");
+                        }
+                        _ => {
+                            panic!("Expected Equal operation");
+                        }
+                    }
+                    match *right {
+                        Condition::And(left, right) => {
+                            match *left {
+                                Condition::Equal(field, value) => {
+                                    assert_eq!(field, "name");
+                                    assert_eq!(value, "John");
+                                }
+                                _ => {
+                                    panic!("Expected Equal operation");
+                                }
+                            }
+                            match *right {
+                                Condition::GreaterThanOrEqual(field, value) => {
+                                    assert_eq!(field, "age");
+                                    assert_eq!(value, "30");
+                                }
+                                _ => {
+                                    panic!("Expected GreaterThanOrEqual operation");
+                                }
+                            }
+                        }
+                        _ => {
+                            panic!("Expected And operation");
+                        }
+                    }
+                }
+                _ => {
+                    panic!("Expected And operation");
+                }
+            }
+        } else {
+            panic!("Expected Update command");
         }
     }
 }

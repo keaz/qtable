@@ -1,11 +1,7 @@
 use std::{collections::HashMap, sync::Arc};
 
 use log::debug;
-use tokio::{
-    io,
-    net::TcpListener,
-    sync::{mpsc::UnboundedSender, RwLock},
-};
+use tokio::{io, net::TcpListener, sync::RwLock};
 
 use crate::database::NoSqlDatabase;
 

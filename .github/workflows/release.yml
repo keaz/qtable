@@ -1,0 +1,97 @@
+name: Build and Release Rust Project for Multiple Platforms
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build and Release Rust Binary
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            target_x86: x86_64-apple-darwin
+            target_arm: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+
+    steps:
+      # Step 1: Check out the code from the repository
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # Step 2: Install OpenSSL on macOS
+      - name: Install OpenSSL on macOS
+        if: matrix.os == 'macos-latest'
+        run: |
+          brew install openssl
+          echo "Setting OpenSSL environment variables..."
+          export OPENSSL_DIR=$(brew --prefix openssl@3)
+          export PKG_CONFIG_PATH=$OPENSSL_DIR/lib/pkgconfig
+          echo "OPENSSL_DIR=$OPENSSL_DIR" >> $GITHUB_ENV
+          echo "PKG_CONFIG_PATH=$PKG_CONFIG_PATH" >> $GITHUB_ENV
+
+      # Step 3: Install Rust toolchain
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target || matrix.target_x86 }}
+
+      # Step 4: Install necessary tools for macOS universal binary
+      - name: Install macOS universal binary tools
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+
+      # Step 5: Build with Cargo (macOS universal requires both targets)
+      - name: Build with Cargo
+        run: |
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          lipo -create -output ./target/release/universal_binary \
+                ./target/x86_64-apple-darwin/release/kcli \
+                ./target/aarch64-apple-darwin/release/kcli
+        shell: bash
+
+      # Step 6: Determine if the release is a pre-release
+      - name: Set prerelease flag
+        id: prerelease_check
+        run: |
+          if [[ "${GITHUB_REF#refs/tags/}" == *"alpha"* || "${GITHUB_REF#refs/tags/}" == *"beta"* ]]; then
+            echo "prerelease=true" >> $GITHUB_ENV
+          else
+            echo "prerelease=false" >> $GITHUB_ENV
+          fi
+
+      # Step 7: Create a GitHub Release
+      - name: Create a GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        if: ${{ matrix.os == 'ubuntu-latest' }} # Create the release only once (on Ubuntu)
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          body: |
+            This release includes the latest Rust binary for version ${{ github.ref }}.
+          draft: false
+          prerelease: ${{ env.prerelease }}
+
+      # Step 8: Upload Release Artifact
+      - name: Upload Release Artifact
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: |
+            ${{ matrix.os == 'macos-latest' && './target/release/universal_binary' || './target/release/kcli' }}
+          asset_name: |
+            ${{ matrix.os == 'macos-latest' && 'kcli-macos-universal' || matrix.os == 'ubuntu-latest' && 'kcli-linux' || 'kcli-windows' }}
+          asset_content_type: application/octet-stream
