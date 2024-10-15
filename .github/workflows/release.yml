@@ -105,3 +105,5 @@ jobs:
           asset_name: |
             ${{ matrix.os == 'macos-latest' && 'qtable-macos-universal' || matrix.os == 'ubuntu-latest' && 'qtable-linux' || 'qtable-windows' }}
           asset_content_type: application/octet-stream
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
