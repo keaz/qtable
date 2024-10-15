@@ -76,18 +76,20 @@ jobs:
             echo "prerelease=false" >> $GITHUB_ENV
           fi
 
-      # Step 7: Create a GitHub Release
+          # Step 7: Create a GitHub Release
       - name: Create a GitHub Release
         id: create_release
         uses: actions/create-release@v1
         if: ${{ matrix.os == 'ubuntu-latest' }} # Create the release only once (on Ubuntu)
         with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          body: |
-            This release includes the latest Rust binary for version ${{ github.ref }}.
-          draft: false
-          prerelease: ${{ env.prerelease }}
+            tag_name: ${{ github.ref }}
+            release_name: Release ${{ github.ref }}
+            body: |
+                This release includes the latest Rust binary for version ${{ github.ref }}.
+            draft: false
+            prerelease: ${{ env.prerelease }}
+        env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       # Step 8: Upload Release Artifact
       - name: Upload Release Artifact
