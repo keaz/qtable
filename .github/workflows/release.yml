@@ -84,7 +84,7 @@ jobs:
       - name: Create a GitHub Release
         id: create_release
         uses: actions/create-release@v1
-        if: ${{ matrix.os == 'ubuntu-latest' }} # Create the release only once (on Ubuntu)
+        if: ${{ matrix.os == 'macos-latest' }} # Create the release only once (on Ubuntu)
         with:
             tag_name: ${{ github.ref }}
             release_name: Release ${{ github.ref }}
